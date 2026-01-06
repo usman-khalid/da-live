@@ -11,11 +11,19 @@ export default class DaContent extends LitElement {
     permissions: { attribute: false },
     proseEl: { attribute: false },
     wsProvider: { attribute: false },
+    commentsMap: { attribute: false },
+    currentUser: { attribute: false },
     _editorLoaded: { state: true },
     _showPane: { state: true },
     _versionUrl: { state: true },
     _ueUrl: { state: true },
+    _commentCount: { state: true },
   };
+
+  constructor() {
+    super();
+    this._commentCount = 0;
+  }
 
   connectedCallback() {
     super.connectedCallback();
@@ -30,11 +38,11 @@ export default class DaContent extends LitElement {
   }
 
   async loadViews() {
-    // Only import the web components once
     if (this._editorLoaded) return;
     const preview = import('../da-preview/da-preview.js');
     const versions = import('../da-versions/da-versions.js');
-    await Promise.all([preview, versions]);
+    const comments = import('../da-comments/da-comments.js');
+    await Promise.all([preview, versions, comments]);
     this._editorLoaded = true;
   }
 
@@ -86,7 +94,16 @@ export default class DaContent extends LitElement {
             <div class="da-editor-tabs-quiet">
               <button class="da-editor-tab quiet show-versions" title="Versions" @click=${() => this.togglePane({ detail: 'versions' })}>Versions</button>
               ${this._ueUrl ? html`<button class="da-editor-tab quiet open-ue" title="Open in-context editing" @click=${this.openUe}>Open in-context editing</button>` : nothing}
-            </div>
+              <button
+                class="da-editor-tab quiet show-comments ${this._showPane === 'comments' ? 'is-active' : ''}"
+                title="Comments"
+                @click=${() => this.togglePane({ detail: 'comments' })}>
+                Comments
+                ${this._commentCount > 0 ? html`
+                  <span class="da-comment-badge">${this._commentCount}</span>
+                ` : nothing}
+              </button>
+              </div>
           </div>
         ` : nothing}
       </div>
@@ -102,6 +119,14 @@ export default class DaContent extends LitElement {
           class="${this._showPane === 'versions' ? 'is-visible' : ''}"
           @preview=${this.handleVersionPreview}
           @close=${this.togglePane}></da-versions>
+        <da-comments
+          class="${this._showPane === 'comments' ? 'is-visible' : ''}"
+          .open=${this._showPane === 'comments'}
+          .commentsMap=${this.commentsMap}
+          .currentUser=${this.currentUser}
+          @close=${this.togglePane}
+          @request-open=${() => { this._showPane = 'comments'; }}
+          @count-changed=${(e) => { this._commentCount = e.detail; }}></da-comments>
         ` : nothing}
     `;
   }

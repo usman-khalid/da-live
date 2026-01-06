@@ -7,6 +7,8 @@ import './da-content/da-content.js';
 let prose;
 let proseEl;
 let wsProvider;
+let commentsMap;
+let currentUser;
 
 export async function checkDoc(path) {
   return daFetch(path, { method: 'HEAD' });
@@ -65,10 +67,30 @@ async function setUI(el) {
   ({
     proseEl,
     wsProvider,
+    commentsMap,
   } = prose.default({ path: details.sourceUrl, permissions }));
 
   daContent.proseEl = proseEl;
   daContent.wsProvider = wsProvider;
+  daContent.commentsMap = commentsMap;
+
+  if (window.adobeIMS?.isSignedInUser()) {
+    window.adobeIMS.getProfile().then((profile) => {
+      currentUser = {
+        id: profile.userId,
+        name: profile.displayName,
+        email: profile.email,
+      };
+      daContent.currentUser = currentUser;
+    });
+  } else {
+    currentUser = {
+      id: `anonymous-${Date.now()}`,
+      name: 'Anonymous',
+      email: '',
+    };
+    daContent.currentUser = currentUser;
+  }
 }
 
 export default async function init(el) {

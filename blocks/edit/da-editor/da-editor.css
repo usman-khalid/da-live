@@ -981,3 +981,61 @@ da-diff-deleted, da-diff-added {
 .focal-point-icon:hover svg {
   color: #0265dc;
 }
+
+.da-comment-highlight {
+  background-color: #fff3cd;
+  border-bottom: 2px solid #ffc107;
+  cursor: pointer;
+  transition: background-color 0.2s;
+
+  &:has(> img) {
+    padding: 6px;
+  }
+}
+
+.da-comment-highlight:hover {
+  background-color: #ffe69c;
+}
+
+.da-comment-highlight-active {
+  background-color: #ffc107;
+  border-bottom-color: #e0a800;
+}
+
+.da-comment-highlight-pending {
+  background-color: #fce4ec;
+  border-bottom: 2px dashed #f48fb1;
+}
+
+.da-add-comment-widget {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 4px;
+  padding: 0;
+  background-color: #ffc107;
+  border: none;
+  border-radius: 50%;
+  color: #000;
+  font-size: 16px;
+  font-weight: bold;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
+  transition: background-color 0.2s, transform 0.1s;
+
+  &:hover {
+    background-color: #e0a800;
+    transform: scale(1.1);
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+
+

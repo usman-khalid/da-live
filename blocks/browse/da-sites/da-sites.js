@@ -1,8 +1,10 @@
 import { LitElement, html, nothing } from 'da-lit';
 import getSheet from '../../shared/sheet.js';
 import { sanitizeName } from '../../../scripts/utils.js';
+import { renderStatusToast } from '../../shared/status-toast/status-toast.js';
 
 const sheet = await getSheet('/blocks/browse/da-sites/da-sites.css');
+const toastSheet = await getSheet('/blocks/shared/status-toast/status-toast.css');
 
 const RANDOM_MAX = 8;
 
@@ -24,7 +26,7 @@ export default class DaSites extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.shadowRoot.adoptedStyleSheets = [sheet];
+    this.shadowRoot.adoptedStyleSheets = [sheet, toastSheet];
     this.getRecents();
   }
 
@@ -121,16 +123,6 @@ export default class DaSites extends LitElement {
 
     this.setStatus('Copied', 'The link was copied to the clipboard.');
     setTimeout(() => { this.setStatus(); }, 3000);
-  }
-
-  renderStatus() {
-    return html`
-      <div class="da-list-status">
-        <div class="da-list-status-toast da-list-status-type-${this._status.type}">
-          <p class="da-list-status-title">${this._status.text}</p>
-          ${this._status.description ? html`<p class="da-list-status-description">${this._status.description}</p>` : nothing}
-        </div>
-      </div>`;
   }
 
   renderGo() {
@@ -249,7 +241,7 @@ export default class DaSites extends LitElement {
           </a>
         </div>
       </div>
-      ${this._status ? this.renderStatus() : nothing}
+      ${renderStatusToast(this._status)}
     `;
   }
 }

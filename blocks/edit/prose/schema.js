@@ -128,6 +128,7 @@ const baseNodes = {
       href: { default: null, validate: 'string|null' },
       dataFocalX: { default: null, validate: 'string|null' },
       dataFocalY: { default: null, validate: 'string|null' },
+      commentThreadId: { default: null, validate: 'string|null' },
       ...topLevelAttrs,
     },
     group: 'inline',
@@ -142,6 +143,7 @@ const baseNodes = {
             href: dom.getAttribute('href'),
             dataFocalX: dom.getAttribute('data-focal-x'),
             dataFocalY: dom.getAttribute('data-focal-y'),
+            commentThreadId: dom.getAttribute('data-comment-thread') || null,
             ...getTopLevelParseAttrs(dom),
           };
           const title = dom.getAttribute('title');
@@ -155,7 +157,7 @@ const baseNodes = {
     ],
     toDOM(node) {
       const {
-        src, alt, title, href, dataFocalX, dataFocalY,
+        src, alt, title, href, dataFocalX, dataFocalY, commentThreadId,
       } = node.attrs;
       const attrs = {
         src,
@@ -169,6 +171,9 @@ const baseNodes = {
       // TODO: This is temp code to store the focal data in the title attribute
       // Once helix properly supports data-focal-x and data-focal-y, we can remove this code
       if (dataFocalX != null) attrs.title = `data-focal:${dataFocalX},${dataFocalY}`;
+      if (commentThreadId) {
+        attrs['data-comment-thread'] = commentThreadId;
+      }
       return ['img', attrs];
     },
   },
@@ -329,7 +334,35 @@ function addCustomMarks(marks) {
 
   const contextHighlight = { toDOM: () => ['span', { class: 'highlighted-context' }, 0] };
 
-  return marks.addToEnd('sup', sup).addToEnd('sub', sub).addToEnd('contextHighlightingMark', contextHighlight);
+  const comment = {
+    attrs: { threadId: { default: null } },
+    inclusive: true,
+    parseDOM: [{
+      tag: 'span[data-comment-thread]',
+      getAttrs(dom) {
+        const threadId = dom.getAttribute('data-comment-thread');
+        if (!threadId || threadId === 'null' || threadId === 'undefined') {
+          return false;
+        }
+        return { threadId };
+      },
+    }],
+    toDOM(mark) {
+      if (!mark.attrs.threadId) {
+        return ['span', {}, 0];
+      }
+      return ['span', {
+        'data-comment-thread': mark.attrs.threadId,
+        class: 'da-comment-highlight',
+      }, 0];
+    },
+  };
+
+  return marks
+    .addToEnd('sup', sup)
+    .addToEnd('sub', sub)
+    .addToEnd('contextHighlightingMark', contextHighlight)
+    .addToEnd('comment', comment);
 }
 
 function getTableNodeSchema() {
