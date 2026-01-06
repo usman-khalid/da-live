@@ -3,7 +3,7 @@ import { DA_ORIGIN, CON_ORIGIN, getLivePreviewUrl } from './constants.js';
 const { getNx } = await import('../../scripts/utils.js');
 
 // TODO: INFRA
-const DA_ORIGINS = ['https://da.live', 'https://da.page', 'https://admin.da.live', 'https://admin.da.page', 'https://stage-admin.da.live', 'https://content.da.live', 'https://stage-content.da.live', 'http://localhost:8787'];
+const DA_ORIGINS = ['https://da.live', 'https://da.page', 'https://admin.da.live', 'https://admin.da.page', 'https://stage-admin.da.live', 'https://content.da.live', 'https://stage-content.da.live', 'http://localhost:8787', 'https://da-admin-usman.7qrnczsck7.workers.dev'];
 const AEM_ORIGINS = ['https://admin.hlx.page', 'https://admin.aem.live'];
 const ALLOWED_TOKEN = [...DA_ORIGINS, ...AEM_ORIGINS];
 
@@ -167,4 +167,33 @@ export async function checkLockdownImages(owner) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Generate a consistent color for a user based on an identifier.
+ * Used for cursor colors and avatar backgrounds.
+ * @param {string} identifier - User email, ID, or other unique string
+ * @param {number[]} hRange - Hue range [min, max]
+ * @param {number[]} sRange - Saturation range [min, max]
+ * @param {number[]} lRange - Lightness range [min, max]
+ * @returns {string} Hex color string
+ */
+export function generateColor(identifier, hRange = [0, 360], sRange = [60, 80], lRange = [40, 60]) {
+  let hash = 0;
+  for (let i = 0; i < identifier.length; i += 1) {
+    // eslint-disable-next-line no-bitwise
+    hash = identifier.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  hash = Math.abs(hash);
+  const normalizeHash = (min, max) => Math.floor((hash % (max - min)) + min);
+  const h = normalizeHash(hRange[0], hRange[1]);
+  const s = normalizeHash(sRange[0], sRange[1]);
+  const l = normalizeHash(lRange[0], lRange[1]) / 100;
+  const a = (s * Math.min(l, 1 - l)) / 100;
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
 }

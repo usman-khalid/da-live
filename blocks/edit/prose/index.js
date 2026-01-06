@@ -34,6 +34,7 @@ import linkTextSync from './plugins/linkTextSync.js';
 import sectionPasteHandler from './plugins/sectionPasteHandler.js';
 import base64Uploader from './plugins/base64uploader.js';
 import { COLLAB_ORIGIN, DA_ORIGIN } from '../../shared/constants.js';
+import { generateColor } from '../../shared/utils.js';
 import toggleLibrary from '../da-library/da-library.js';
 import { checkDoc } from '../edit.js';
 import { debounce, initDaMetadata } from '../utils/helpers.js';
@@ -49,6 +50,12 @@ import {
   handleUndo,
   handleRedo,
 } from './plugins/keyHandlers.js';
+import {
+  createCommentPlugin,
+  setCommentsMap,
+  setWsProvider,
+  openCommentPanel,
+} from './plugins/comments/commentPlugin.js';
 
 let lastCursorPosition = null;
 
@@ -232,26 +239,6 @@ function registerErrorHandler(ydoc) {
   });
 }
 
-function generateColor(name, hRange = [0, 360], sRange = [60, 80], lRange = [40, 60]) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) {
-    // eslint-disable-next-line no-bitwise
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  hash = Math.abs(hash);
-  const normalizeHash = (min, max) => Math.floor((hash % (max - min)) + min);
-  const h = normalizeHash(hRange[0], hRange[1]);
-  const s = normalizeHash(sRange[0], sRange[1]);
-  const l = normalizeHash(lRange[0], lRange[1]) / 100;
-  const a = (s * Math.min(l, 1 - l)) / 100;
-  const f = (n) => {
-    const k = (n + h / 30) % 12;
-    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-    return Math.round(255 * color).toString(16).padStart(2, '0');
-  };
-  return `#${f(0)}${f(8)}${f(4)}`;
-}
-
 function storeCursorPosition(view) {
   const { from, to } = view.state.selection;
   lastCursorPosition = { from, to };
@@ -341,10 +328,16 @@ export default function initProse({ path, permissions }) {
     });
   }
 
+  // Initialize comments plugin
+  const commentsMap = ydoc.getMap('comments');
+  setCommentsMap(commentsMap);
+  setWsProvider(wsProvider);
+
   const plugins = [
     ySyncPlugin(yXmlFragment),
     yCursorPlugin(wsProvider.awareness),
     yUndoPlugin(),
+    createCommentPlugin(),
     trackCursorAndChanges(),
     slashMenu(),
     linkMenu(),
@@ -366,6 +359,7 @@ export default function initProse({ path, permissions }) {
       'Mod-y': handleRedo,
       'Mod-Shift-z': handleRedo,
       'Mod-Shift-l': toggleLibrary,
+      'Mod-Alt-m': openCommentPanel,
       'Mod-k': (state, dispatch, view) => { // toggle link prompt
         const linkMarkType = state.schema.marks.link;
         const linkMenuItem = linkItem(linkMarkType);
@@ -435,5 +429,5 @@ export default function initProse({ path, permissions }) {
   document.execCommand('enableObjectResizing', false, 'false');
   document.execCommand('enableInlineTableEditing', false, 'false');
 
-  return { proseEl: editor, wsProvider };
+  return { proseEl: editor, wsProvider, commentsMap };
 }
