@@ -3,6 +3,7 @@ import { LitElement, html, nothing } from 'da-lit';
 import getSheet from '../../shared/sheet.js';
 import '../da-editor/da-editor.js';
 import { getLivePreviewUrl } from '../../shared/constants.js';
+import { hasValidCommentSelection } from '../prose/plugins/comments/commentPlugin.js';
 
 const sheet = await getSheet('/blocks/edit/da-content/da-content.css');
 
@@ -13,15 +14,47 @@ export default class DaContent extends LitElement {
     proseEl: { attribute: false },
     wsProvider: { attribute: false },
     lockdownImages: { attribute: false },
+    currentUser: { attribute: false },
     _editorLoaded: { state: true },
     _showPane: { state: true },
     _versionUrl: { state: true },
     _externalUrl: { state: true },
+    _commentCount: { state: true },
+    _canAddComment: { state: true },
   };
+
+  constructor() {
+    super();
+    this._commentCount = 0;
+    this._canAddComment = false;
+    this.handleSelectionChange = this.handleSelectionChange.bind(this);
+  }
 
   connectedCallback() {
     super.connectedCallback();
     this.shadowRoot.adoptedStyleSheets = [sheet];
+    window.addEventListener('da-selection-change', this.handleSelectionChange);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('da-selection-change', this.handleSelectionChange);
+  }
+
+  handleSelectionChange() {
+    this._canAddComment = window.view ? hasValidCommentSelection(window.view.state) : false;
+  }
+
+  renderCommentBadge() {
+    if (this._canAddComment) {
+      return html`<span class="da-comment-badge">+</span>`;
+    }
+
+    if (this._commentCount > 0) {
+      return html`<span class="da-comment-badge">${this._commentCount}</span>`;
+    }
+
+    return nothing;
   }
 
   disconnectWebsocket() {
@@ -32,12 +65,12 @@ export default class DaContent extends LitElement {
   }
 
   async loadViews() {
-    // Only import the web components once
     if (this._editorLoaded) return;
 
     const preview = import('../da-preview/da-preview.js');
     const versions = import('../da-versions/da-versions.js');
-    await Promise.all([preview, versions]);
+    const comments = import('../da-comments/da-comments.js');
+    await Promise.all([preview, versions, comments]);
     this._editorLoaded = true;
   }
 
@@ -101,6 +134,13 @@ export default class DaContent extends LitElement {
             <div class="da-editor-tabs-quiet">
               <button class="da-editor-tab quiet show-versions" title="Versions" @click=${() => this.togglePane({ detail: 'versions' })}>Versions</button>
               ${this._externalUrl ? html`<button class="da-editor-tab quiet open-ue" title="Open in-context editing" @click=${this.openUe}>Open in-context editing</button>` : nothing}
+              <button
+                class="da-editor-tab quiet show-comments ${this._showPane === 'comments' ? 'is-active' : ''}"
+                title="${this._canAddComment ? 'Add comment' : 'Comments'}"
+                @click=${() => this.togglePane({ detail: 'comments' })}>
+                Comments
+                ${this.renderCommentBadge()}
+              </button>
             </div>
           </div>
         ` : nothing}
@@ -118,6 +158,13 @@ export default class DaContent extends LitElement {
           class="${this._showPane === 'versions' ? 'is-visible' : ''}"
           @preview=${this.handleVersionPreview}
           @close=${this.togglePane}></da-versions>
+        <da-comments
+          class="${this._showPane === 'comments' ? 'is-visible' : ''}"
+          .open=${this._showPane === 'comments'}
+          .currentUser=${this.currentUser}
+          @close=${this.togglePane}
+          @request-open=${() => { this._showPane = 'comments'; }}
+          @count-changed=${(e) => { this._commentCount = e.detail; }}></da-comments>
         ` : nothing}
     `;
   }

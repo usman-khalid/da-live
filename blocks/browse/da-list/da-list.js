@@ -2,6 +2,8 @@ import { LitElement, html, repeat, nothing } from 'da-lit';
 import { DA_ORIGIN } from '../../shared/constants.js';
 import { getNx, sanitizePathParts } from '../../../scripts/utils.js';
 import { daFetch, aemAdmin } from '../../shared/utils.js';
+import { renderStatusToast } from '../../shared/status-toast/status-toast.js';
+import getSheet from '../../shared/sheet.js';
 
 import '../da-list-item/da-list-item.js';
 
@@ -9,6 +11,7 @@ import '../da-list-item/da-list-item.js';
 const { default: getStyle } = await import(`${getNx()}/utils/styles.js`);
 const { default: getSvg } = await import(`${getNx()}/utils/svg.js`);
 const STYLE = await getStyle(import.meta.url);
+const toastSheet = await getSheet('/blocks/shared/status-toast/status-toast.css');
 const ICONS = [
   '/blocks/edit/img/Smock_Cancel_18_N.svg',
   '/blocks/edit/img/Smock_Checkmark_18_N.svg',
@@ -64,7 +67,7 @@ export default class DaList extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.shadowRoot.adoptedStyleSheets = [STYLE];
+    this.shadowRoot.adoptedStyleSheets = [STYLE, toastSheet];
     getSvg({ parent: this.shadowRoot, paths: ICONS });
   }
 
@@ -671,13 +674,7 @@ export default class DaList extends LitElement {
   }
 
   renderStatus() {
-    return html`
-      <div class="da-list-status">
-        <div class="da-list-status-toast da-list-status-type-${this._status.type}">
-          <p class="da-list-status-title">${this._status.text}</p>
-          ${this._status.description ? html`<p class="da-list-status-description">${this._status.description}</p>` : nothing}
-        </div>
-      </div>`;
+    return renderStatusToast(this._status);
   }
 
   renderConfirm() {
