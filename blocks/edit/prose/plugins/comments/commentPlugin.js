@@ -278,6 +278,7 @@ export function isImageSelection(state) {
 
 /**
  * Apply comment to an image by setting its commentThreadId attribute.
+ * Uses the pending comment range to find the image position.
  * @param {string} threadId - The ID of the comment thread
  * @returns {boolean} True if applied successfully
  */
@@ -285,10 +286,27 @@ function applyCommentToImage(threadId) {
   if (!window.view) return false;
 
   const { state, dispatch } = window.view;
-  const { selection } = state;
 
-  if (!(selection instanceof NodeSelection)) return false;
-  if (selection.node?.type.name !== 'image') return false;
+  const pendingRange = pluginState.pendingCommentRange;
+  if (pendingRange?.isImage) {
+    const node = state.doc.nodeAt(pendingRange.from);
+    if (node?.type.name === 'image') {
+      const tr = state.tr.setNodeMarkup(pendingRange.from, null, {
+        ...node.attrs,
+        commentThreadId: threadId,
+      });
+      dispatch(tr);
+      return true;
+    }
+  }
+
+  const { selection } = state;
+  if (!(selection instanceof NodeSelection)) {
+    return false;
+  }
+  if (selection.node?.type.name !== 'image') {
+    return false;
+  }
 
   const pos = selection.from;
   const tr = state.tr.setNodeMarkup(pos, null, {
@@ -679,11 +697,15 @@ function buildDecorations(state) {
 
   state.doc.descendants((node, pos) => {
     if (node.type.name === 'image' && node.attrs.commentThreadId) {
-      const isActive = node.attrs.commentThreadId === pluginState.activeThreadId;
+      const { commentThreadId } = node.attrs;
+      const isActive = commentThreadId === pluginState.activeThreadId;
       const highlightClass = isActive
         ? 'da-comment-highlight da-comment-highlight-active'
         : 'da-comment-highlight';
-      decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: highlightClass }));
+      decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+        class: highlightClass,
+        'data-comment-thread': commentThreadId,
+      }));
     }
   });
 
@@ -757,9 +779,29 @@ export function openCommentPanel() {
  * Handle clicks on comment highlights (text marks or images).
  * Activates the clicked thread, or clears active thread if clicking elsewhere.
  */
-function handleClick(view, pos) {
+function handleClick(view, pos, event) {
   const { state } = view;
   const commentMark = state.schema.marks.comment;
+
+  // Check DOM element first - most reliable for images
+  // (position resolution for inline nodes can be unreliable at edges)
+  const clickedElement = event?.target;
+  if (clickedElement?.tagName === 'IMG' && clickedElement.dataset.commentThread) {
+    const threadId = clickedElement.dataset.commentThread;
+    setActiveThread(threadId);
+    window.dispatchEvent(new CustomEvent('da-comment-clicked', { detail: { threadId } }));
+    return true;
+  }
+
+  // Also check the wrapper span (for images in tables)
+  const wrapper = clickedElement?.closest('.focal-point-image-wrapper[data-comment-thread]');
+  if (wrapper) {
+    const threadId = wrapper.dataset.commentThread;
+    setActiveThread(threadId);
+    window.dispatchEvent(new CustomEvent('da-comment-clicked', { detail: { threadId } }));
+    return true;
+  }
+
   if (!commentMark) {
     if (pluginState.activeThreadId) {
       setActiveThread(null);
@@ -769,6 +811,7 @@ function handleClick(view, pos) {
 
   const $pos = state.doc.resolve(pos);
   const node = $pos.parent.maybeChild($pos.index());
+  const nodeAt = state.doc.nodeAt(pos);
 
   if (node && node.isText) {
     const mark = node.marks.find((m) => m.type === commentMark);
@@ -783,8 +826,12 @@ function handleClick(view, pos) {
     }
   }
 
-  if (node && node.type.name === 'image' && node.attrs.commentThreadId) {
-    const { commentThreadId } = node.attrs;
+  // Check for image - use nodeAt as fallback (more reliable for inline nodes)
+  const imageNode = (node?.type.name === 'image' ? node : null)
+    || (nodeAt?.type.name === 'image' ? nodeAt : null);
+
+  if (imageNode?.attrs.commentThreadId) {
+    const { commentThreadId } = imageNode.attrs;
     setActiveThread(commentThreadId);
 
     const detail = { threadId: commentThreadId };
