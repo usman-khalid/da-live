@@ -150,6 +150,16 @@ export function formatFullTimestamp(timestamp) {
 }
 
 /**
+ * Check if a comment was edited
+ * @param {object} comment - Comment object
+ * @returns {boolean}
+ */
+export function wasEdited(comment) {
+  if (!comment?.createdAt || !comment?.updatedAt) return false;
+  return Math.abs(comment.updatedAt - comment.createdAt) > 1000;
+}
+
+/**
  * Get user initials from name
  * @param {string} name - User's display name
  * @returns {string} Initials (up to 2 characters)

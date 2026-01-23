@@ -21,6 +21,7 @@ import {
   unresolveComment,
   formatTimestamp,
   formatFullTimestamp,
+  wasEdited,
   getInitials,
   getPositionContext,
   findBestMatchPosition,
@@ -706,7 +707,9 @@ export default class DaComments extends LitElement {
           ${this.renderAvatar(rootComment.author)}
           <div class="da-thread-preview-meta">
             <span class="da-thread-preview-author">${rootComment.author.name}</span>
-            <span class="da-thread-preview-time" title="${formatFullTimestamp(rootComment.createdAt)}">${formatTimestamp(rootComment.createdAt)}</span>
+            <span class="da-thread-preview-time" title="${formatFullTimestamp(rootComment.createdAt)}">
+              ${formatTimestamp(rootComment.createdAt)}${wasEdited(rootComment) ? html`<span class="da-edited-indicator" title="Edited ${formatFullTimestamp(rootComment.updatedAt)}"> · Edited</span>` : nothing}
+            </span>
           </div>
           ${isResolved ? html`<span class="da-resolved-tag">Resolved</span>` : nothing}
           ${isOrphaned ? html`<span class="da-orphaned-tag">Detached</span>` : nothing}
@@ -729,7 +732,9 @@ export default class DaComments extends LitElement {
             ${this.renderAvatar(comment.author)}
             <div class="da-comment-meta">
               <span class="da-comment-author">${comment.author.name}</span>
-              <span class="da-comment-time" title="${formatFullTimestamp(comment.createdAt)}">${formatTimestamp(comment.createdAt)}</span>
+              <span class="da-comment-time" title="${formatFullTimestamp(comment.createdAt)}">
+                ${formatTimestamp(comment.createdAt)}${wasEdited(comment) ? html`<span class="da-edited-indicator" title="Edited ${formatFullTimestamp(comment.updatedAt)}"> · Edited</span>` : nothing}
+              </span>
             </div>
           </div>
           <form @submit=${this.saveEdit} class="da-comment-form da-edit-form">
@@ -766,7 +771,9 @@ export default class DaComments extends LitElement {
           ${this.renderAvatar(comment.author)}
           <div class="da-comment-meta">
             <span class="da-comment-author">${comment.author.name}</span>
-            <span class="da-comment-time" title="${formatFullTimestamp(comment.createdAt)}">${formatTimestamp(comment.createdAt)}</span>
+            <span class="da-comment-time" title="${formatFullTimestamp(comment.createdAt)}">
+              ${formatTimestamp(comment.createdAt)}${wasEdited(comment) ? html`<span class="da-edited-indicator" title="Edited ${formatFullTimestamp(comment.updatedAt)}"> · Edited</span>` : nothing}
+            </span>
           </div>
           ${showActions ? html`
             <div class="da-comment-header-actions">

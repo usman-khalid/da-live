@@ -359,6 +359,11 @@
   color: var(--s2-gray-700);
 }
 
+.da-edited-indicator {
+  font-style: italic;
+  color: var(--s2-gray-600);
+}
+
 .da-comment-content {
   font-size: 14px;
   line-height: 1.5;
