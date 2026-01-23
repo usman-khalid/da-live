@@ -12,6 +12,24 @@
 
 :host {
   font-family: var(--body-font-family);
+
+  /* Surface colors - using Spectrum grays where applicable */
+  --comment-surface: #fff;
+  --comment-surface-alt: var(--s2-gray-75);
+  --comment-surface-hover: var(--s2-gray-75);
+  --comment-surface-active: var(--s2-gray-75);
+  --comment-border: var(--s2-gray-200);
+  --comment-border-hover: var(--s2-gray-400);
+  --comment-border-muted: var(--s2-gray-400);
+  --comment-text-muted: var(--s2-gray-700);
+  --comment-text-placeholder: var(--s2-gray-600);
+  --comment-orphaned-bg: #fff8f0;
+  --comment-orphaned-badge-bg: #fff3e0;
+  --comment-reaction-active-bg: var(--s2-blue-200);
+  --comment-reaction-active-border: var(--spectrum-blue-800);
+  --comment-reaction-active-bg-hover: var(--s2-blue-200);
+  --comment-reaction-active-border-hover: var(--spectrum-blue-800);
+  --comment-link: var(--spectrum-blue-800);
 }
 
 /* Panel container - matching da-versions pattern */
@@ -29,7 +47,7 @@
   margin: 0 0 24px;
   position: sticky;
   top: 0;
-  background: #fff;
+  background: var(--comment-surface);
   padding-top: 12px;
   padding-bottom: 12px;
   z-index: 10;
@@ -247,7 +265,7 @@
 
 .da-comment-card {
   position: relative;
-  background: #fff;
+  background: var(--comment-surface);
   border: 1px solid var(--s2-gray-200);
   border-radius: 8px;
   padding: 16px;
@@ -258,7 +276,7 @@
 }
 
 .da-comment-card.orphaned {
-  background: #fff8f0;
+  background: var(--comment-orphaned-bg);
   border-color: var(--s2-orange-200);
 }
 
@@ -280,7 +298,7 @@
   gap: 6px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  background: #fff3e0;
+  background: var(--comment-orphaned-badge-bg);
   color: var(--s2-orange-800);
   font-size: 12px;
   font-weight: 500;
@@ -398,7 +416,7 @@
   top: 100%;
   right: 0;
   min-width: 180px;
-  background: #fff;
+  background: var(--comment-surface);
   border: 1px solid var(--s2-gray-200);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgb(0 0 0 / 15%);
@@ -528,7 +546,7 @@
   padding: 8px 12px;
   border: none;
   background: transparent;
-  color: #0265dc;
+  color: var(--comment-link);
   font-family: var(--body-font-family);
   font-size: 13px;
   cursor: pointer;
@@ -585,17 +603,17 @@
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--comment-border);
   border-radius: 12px;
-  background: #f5f5f5;
+  background: var(--comment-surface-alt);
   cursor: pointer;
   font-size: 13px;
   transition: all 0.15s;
 }
 
 .da-reaction:hover:not(:disabled) {
-  background: #eee;
-  border-color: #ccc;
+  background: var(--comment-surface-hover);
+  border-color: var(--comment-border-hover);
 }
 
 .da-reaction:disabled {
@@ -604,13 +622,13 @@
 }
 
 .da-reaction-active {
-  background: #e3f2fd;
-  border-color: #90caf9;
+  background: var(--comment-reaction-active-bg);
+  border-color: var(--comment-reaction-active-border);
 }
 
 .da-reaction-active:hover:not(:disabled) {
-  background: #bbdefb;
-  border-color: #64b5f6;
+  background: var(--comment-reaction-active-bg-hover);
+  border-color: var(--comment-reaction-active-border-hover);
 }
 
 .da-reaction-emoji {
@@ -620,7 +638,7 @@
 
 .da-reaction-count {
   font-size: 12px;
-  color: #666;
+  color: var(--comment-text-muted);
   font-weight: 500;
 }
 
@@ -635,18 +653,18 @@
   width: 28px;
   height: 28px;
   padding: 0;
-  border: 1px dashed #ccc;
+  border: 1px dashed var(--comment-border-hover);
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
-  color: #888;
+  color: var(--comment-text-placeholder);
   transition: all 0.15s;
 }
 
 .da-reaction-add:hover {
-  background: #f5f5f5;
-  border-color: #999;
-  color: #666;
+  background: var(--comment-surface-alt);
+  border-color: var(--comment-border-muted);
+  color: var(--comment-text-muted);
 }
 
 .da-reaction-picker {
@@ -656,8 +674,8 @@
   display: flex;
   gap: 4px;
   padding: 8px;
-  background: #fff;
-  border: 1px solid #e0e0e0;
+  background: var(--comment-surface);
+  border: 1px solid var(--comment-border);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   z-index: 100;
@@ -680,7 +698,7 @@
 }
 
 .da-reaction-picker-item:hover {
-  background: #f0f0f0;
+  background: var(--comment-surface-active);
 }
 
 .da-icon {

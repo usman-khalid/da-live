@@ -8,6 +8,14 @@
   --editor-btn-bg-color: #EFEFEF;
   --editor-btn-bg-color-hover: var(--s2-blue-900);
 
+  --comment-highlight-bg: #fff3cd;
+  --comment-highlight-bg-hover: #ffe69c;
+  --comment-highlight-bg-active: #ffc107;
+  --comment-highlight-border: #ffc107;
+  --comment-highlight-border-active: #e0a800;
+  --comment-pending-bg: #fce4ec;
+  --comment-pending-border: #f48fb1;
+
   grid-area: editor;
 }
 
@@ -983,8 +991,8 @@ da-diff-deleted, da-diff-added {
 }
 
 .da-comment-highlight {
-  background-color: #fff3cd;
-  border-bottom: 2px solid #ffc107;
+  background-color: var(--comment-highlight-bg);
+  border-bottom: 2px solid var(--comment-highlight-border);
   cursor: pointer;
   transition: background-color 0.2s;
 
@@ -994,43 +1002,43 @@ da-diff-deleted, da-diff-added {
 }
 
 .da-comment-highlight:hover {
-  background-color: #ffe69c;
+  background-color: var(--comment-highlight-bg-hover);
 }
 
 .da-comment-highlight-active {
-  background-color: #ffc107;
-  border-bottom-color: #e0a800;
+  background-color: var(--comment-highlight-bg-active);
+  border-bottom-color: var(--comment-highlight-border-active);
 }
 
 .da-comment-highlight-pending {
-  background-color: #fce4ec;
-  border-bottom: 2px dashed #f48fb1;
+  background-color: var(--comment-pending-bg);
+  border-bottom: 2px dashed var(--comment-pending-border);
 }
 
 img.da-comment-highlight {
   box-shadow:
-    0 0 0 6px #fff3cd,
-    0 2px 0 6px #ffc107;
+    0 0 0 6px var(--comment-highlight-bg),
+    0 2px 0 6px var(--comment-highlight-border);
   cursor: pointer;
   transition: box-shadow 0.2s;
 }
 
 img.da-comment-highlight:hover {
   box-shadow:
-    0 0 0 6px #ffe69c,
-    0 2px 0 6px #ffc107;
+    0 0 0 6px var(--comment-highlight-bg-hover),
+    0 2px 0 6px var(--comment-highlight-border);
 }
 
 img.da-comment-highlight-active {
   box-shadow:
-    0 0 0 6px #ffc107,
-    0 2px 0 6px #e0a800;
+    0 0 0 6px var(--comment-highlight-bg-active),
+    0 2px 0 6px var(--comment-highlight-border-active);
 }
 
 img.da-comment-highlight-pending {
   box-shadow:
-    0 0 0 6px #fce4ec,
-    0 2px 0 6px #f48fb1;
+    0 0 0 6px var(--comment-pending-bg),
+    0 2px 0 6px var(--comment-pending-border);
 }
 
 .da-add-comment-widget {
@@ -1041,7 +1049,7 @@ img.da-comment-highlight-pending {
   height: 20px;
   margin-left: 4px;
   padding: 0;
-  background-color: #ffc107;
+  background-color: var(--comment-highlight-border);
   border: none;
   border-radius: 50%;
   color: #000;
@@ -1055,7 +1063,7 @@ img.da-comment-highlight-pending {
   animation: da-widget-pop-in 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 
   &:hover {
-    background-color: #e0a800;
+    background-color: var(--comment-highlight-border-active);
     transform: scale(1.1);
   }
 
