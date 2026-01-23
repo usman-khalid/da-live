@@ -18,12 +18,14 @@ const DA_ADMIN_ENVS = {
   local: 'http://localhost:8787',
   stage: 'https://stage-admin.da.live',
   prod: 'https://admin.da.live',
+  usman: 'https://da-admin-usman.7qrnczsck7.workers.dev',
 };
 
 const DA_COLLAB_ENVS = {
   local: 'ws://localhost:4711',
   stage: 'wss://stage-collab.da.live',
   prod: 'wss://collab.da.live',
+  usman: 'wss://da-collab-usman.7qrnczsck7.workers.dev',
 };
 
 function getDaEnv(location, key, envs) {
