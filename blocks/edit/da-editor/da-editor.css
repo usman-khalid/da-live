@@ -7,7 +7,6 @@
 .da-prose-mirror {
   --editor-btn-bg-color: #EFEFEF;
   --editor-btn-bg-color-hover: var(--s2-blue-900);
-
   --comment-highlight-bg: #fff3cd;
   --comment-highlight-bg-hover: #ffe69c;
   --comment-highlight-bg-active: #ffc107;

@@ -31,4 +31,3 @@ export function showStatus(setStatus, text, description, type = 'info', duration
   setStatus(text, description, type);
   setTimeout(() => { setStatus(null); }, duration);
 }
-
