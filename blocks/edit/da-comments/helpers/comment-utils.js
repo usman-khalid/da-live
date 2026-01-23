@@ -10,12 +10,15 @@
  * governing permissions and limitations under the License.
  */
 
+// Number of characters to capture before/after selection for position context
+export const POSITION_CONTEXT_RADIUS = 30;
+
 /**
  * Create a reply to an existing comment
- * @param {object} parentComment - The parent comment to reply to
- * @param {object} author - Author object
+ * @param {Object} parentComment - The parent comment to reply to
+ * @param {Object} author - Author object with id, name, email
  * @param {string} content - Reply content
- * @returns {object} Reply comment object
+ * @returns {Object} Reply comment object
  */
 export function createReply(parentComment, author, content) {
   const id = crypto.randomUUID();
@@ -41,9 +44,9 @@ export function createReply(parentComment, author, content) {
 
 /**
  * Resolve a comment thread
- * @param {object} comment - The comment to resolve
- * @param {object} resolver - User resolving the comment
- * @returns {object} Updated comment
+ * @param {Object} comment - The root comment to resolve
+ * @param {Object} resolver - User resolving the comment
+ * @returns {Object} Updated comment with resolved status
  */
 export function resolveComment(comment, resolver) {
   return {
@@ -58,32 +61,35 @@ export function resolveComment(comment, resolver) {
 }
 
 /**
+ * Unresolve a comment thread (revive a resolved conversation)
+ * @param {Object} comment - The root comment to unresolve
+ * @returns {Object} Updated comment with resolved status cleared
+ */
+export function unresolveComment(comment) {
+  return {
+    ...comment,
+    resolved: false,
+    resolvedBy: null,
+    resolvedAt: null,
+  };
+}
+
+/**
  * Group comments by thread
- * @param {Map|object} commentsMap - Yjs Map or plain object of comments
- * @returns {Map} Map of threadId -> array of comments
+ * @param {Object} commentsMap - Yjs Map containing comments
+ * @returns {Map} Map of threadId to array of comments sorted by createdAt
  */
 export function groupCommentsByThread(commentsMap) {
   const threads = new Map();
 
-  if (commentsMap.forEach) {
-    commentsMap.forEach((comment) => {
-      if (comment && comment.threadId) {
-        if (!threads.has(comment.threadId)) {
-          threads.set(comment.threadId, []);
-        }
-        threads.get(comment.threadId).push(comment);
+  commentsMap.forEach((comment) => {
+    if (comment && comment.threadId) {
+      if (!threads.has(comment.threadId)) {
+        threads.set(comment.threadId, []);
       }
-    });
-  } else {
-    Object.values(commentsMap).forEach((comment) => {
-      if (comment && comment.threadId) {
-        if (!threads.has(comment.threadId)) {
-          threads.set(comment.threadId, []);
-        }
-        threads.get(comment.threadId).push(comment);
-      }
-    });
-  }
+      threads.get(comment.threadId).push(comment);
+    }
+  });
 
   for (const [threadId, comments] of threads) {
     threads.set(threadId, comments.sort((a, b) => a.createdAt - b.createdAt));
@@ -94,8 +100,8 @@ export function groupCommentsByThread(commentsMap) {
 
 /**
  * Get the root comment of a thread
- * @param {array} threadComments - Array of comments in a thread
- * @returns {object} Root comment
+ * @param {Array} threadComments - Array of comments in a thread
+ * @returns {Object} Root comment (the one with parentId === null)
  */
 export function getRootComment(threadComments) {
   return threadComments.find((c) => c.parentId === null) || threadComments[0];
@@ -158,50 +164,30 @@ export function getInitials(name) {
 
 /**
  * Extract position context for a selection in ProseMirror.
- * This helps with accurate recovery when selectedText appears multiple times.
- * @param {object} state - ProseMirror state
- * @param {number} from - Selection start
- * @param {number} to - Selection end
- * @returns {object} Position context
+ * @param {Object} state - ProseMirror editor state
+ * @param {number} from - Selection start position
+ * @param {number} to - Selection end position
+ * @returns {Object} Position context with textBefore and textAfter
  */
 export function getPositionContext(state, from, to) {
   const { doc } = state;
-
-  let blockIndex = 0;
-  let currentBlockPos = 0;
-  let offsetInBlock = 0;
-
-  doc.descendants((node, pos) => {
-    if (node.isBlock && pos < from) {
-      blockIndex += 1;
-      currentBlockPos = pos;
-    }
-    return true;
-  });
-
-  if (currentBlockPos) {
-    offsetInBlock = from - currentBlockPos;
-  }
-
-  const contextRadius = 30;
   const docText = doc.textContent;
-  const textBefore = docText.slice(Math.max(0, from - contextRadius), from);
-  const textAfter = docText.slice(to, Math.min(docText.length, to + contextRadius));
+  const textBefore = docText.slice(Math.max(0, from - POSITION_CONTEXT_RADIUS), from);
+  const textAfter = docText.slice(to, Math.min(docText.length, to + POSITION_CONTEXT_RADIUS));
 
   return {
-    blockIndex,
-    offsetInBlock,
-    textBefore: textBefore.slice(-contextRadius),
-    textAfter: textAfter.slice(0, contextRadius),
+    textBefore: textBefore.slice(-POSITION_CONTEXT_RADIUS),
+    textAfter: textAfter.slice(0, POSITION_CONTEXT_RADIUS),
   };
 }
 
 /**
  * Find the best match position for a comment based on position context.
- * @param {object} state - ProseMirror state
+ * Uses a scoring algorithm when text appears multiple times.
+ * @param {Object} state - ProseMirror editor state
  * @param {string} selectedText - The text to find
- * @param {object} positionContext - The stored position context
- * @returns {object|null} { from, to } or null if not found
+ * @param {Object} positionContext - The stored position context
+ * @returns {Object|null} Position range {from, to} or null if not found
  */
 export function findBestMatchPosition(state, selectedText, positionContext) {
   if (!selectedText || !state) return null;
@@ -260,23 +246,6 @@ export function findBestMatchPosition(state, selectedText, positionContext) {
       }
     }
 
-    if (positionContext.blockIndex !== undefined) {
-      let currentBlockIndex = 0;
-      doc.descendants((node, pos) => {
-        if (node.isBlock && pos < match.from) {
-          currentBlockIndex += 1;
-        }
-        return true;
-      });
-
-      const blockDiff = Math.abs(currentBlockIndex - positionContext.blockIndex);
-      if (blockDiff === 0) {
-        score += 30;
-      } else if (blockDiff <= 2) {
-        score += 15;
-      }
-    }
-
     if (score > bestScore) {
       bestScore = score;
       bestMatch = match;
@@ -293,10 +262,10 @@ export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '🚀', '🥳', '✅']
 
 /**
  * Add a reaction to a comment
- * @param {object} comment - The comment to react to
+ * @param {Object} comment - The comment to react to
  * @param {string} emoji - The emoji reaction
- * @param {object} user - The user adding the reaction
- * @returns {object} Updated comment with reaction
+ * @param {Object} user - The user adding the reaction
+ * @returns {Object} Updated comment with reaction added
  */
 export function addReaction(comment, emoji, user) {
   const reactions = { ...(comment.reactions || {}) };
@@ -312,10 +281,10 @@ export function addReaction(comment, emoji, user) {
 
 /**
  * Remove a reaction from a comment
- * @param {object} comment - The comment to update
+ * @param {Object} comment - The comment to update
  * @param {string} emoji - The emoji reaction to remove
  * @param {string} userId - The user ID removing the reaction
- * @returns {object} Updated comment without the reaction
+ * @returns {Object} Updated comment with reaction removed
  */
 export function removeReaction(comment, emoji, userId) {
   const reactions = { ...(comment.reactions || {}) };
@@ -330,7 +299,7 @@ export function removeReaction(comment, emoji, userId) {
 
 /**
  * Check if a user has reacted with a specific emoji
- * @param {object} comment - The comment to check
+ * @param {Object} comment - The comment to check
  * @param {string} emoji - The emoji to check for
  * @param {string} userId - The user ID to check
  * @returns {boolean} True if user has reacted with this emoji
@@ -341,8 +310,8 @@ export function hasUserReacted(comment, emoji, userId) {
 
 /**
  * Get all reactions for a comment as an array
- * @param {object} comment - The comment
- * @returns {array} Array of { emoji, users, count }
+ * @param {Object} comment - The comment
+ * @returns {Array} Array of reaction summaries with emoji, users, and count
  */
 export function getReactionsList(comment) {
   if (!comment.reactions) return [];

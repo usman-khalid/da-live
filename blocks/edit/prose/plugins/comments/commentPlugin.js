@@ -16,17 +16,26 @@ import {
   Decoration,
   DecorationSet,
   NodeSelection,
+  Slice,
+  CellSelection,
 } from 'da-y-wrapper';
 import { groupCommentsByThread, findBestMatchPosition, getPositionContext } from '../../../da-comments/helpers/comment-utils.js';
 
+const ADD_WIDGET_DELAY_MS = 300;
+const SYNC_STABILITY_DELAY_MS = 500;
+
 const commentPluginKey = new PluginKey('comments');
 
-let commentsMap = null;
-let activeThreadId = null;
-let pendingCommentRange = null;
-let initialSyncComplete = false;
-let addWidgetTimeout = null;
-let showAddWidget = false;
+const pluginState = {
+  commentsMap: null,
+  activeThreadId: null,
+  pendingCommentRange: null,
+  initialSyncComplete: false,
+  addWidgetTimeout: null,
+  showAddWidget: false,
+  syncStabilityTimeout: null,
+  lastDocChangeTime: 0,
+};
 
 /**
  * Get all thread IDs that have marks in the document.
@@ -57,12 +66,29 @@ function getThreadIdsWithMarks(state) {
 }
 
 /**
+ * Find the root comment entry for a specific thread.
+ * @param {string} threadId - Thread ID to find
+ * @returns {object|null} { id, comment } or null if not found
+ */
+function findRootCommentEntry(threadId) {
+  if (!pluginState.commentsMap) return null;
+
+  let result = null;
+  pluginState.commentsMap.forEach((comment, id) => {
+    if (comment.threadId === threadId && comment.parentId === null) {
+      result = { id, comment };
+    }
+  });
+  return result;
+}
+
+/**
  * Set the Yjs comments map for the plugin
  * @param {Y.Map} map - Yjs Map containing comments
  */
 export function setCommentsMap(map) {
-  commentsMap = map;
-  initialSyncComplete = false;
+  pluginState.commentsMap = map;
+  pluginState.initialSyncComplete = false;
 }
 
 /**
@@ -71,14 +97,14 @@ export function setCommentsMap(map) {
  * Uses position context for accurate recovery when text appears multiple times.
  */
 function recoverMissingMarks() {
-  if (!window.view || !commentsMap) return;
+  if (!window.view || !pluginState.commentsMap) return;
 
   const { state } = window.view;
   const commentMark = state.schema.marks.comment;
   if (!commentMark) return;
 
   const threadIdsWithMarks = getThreadIdsWithMarks(state);
-  const threads = groupCommentsByThread(commentsMap);
+  const threads = groupCommentsByThread(pluginState.commentsMap);
 
   let hasRecoveries = false;
   let { tr } = state;
@@ -110,29 +136,71 @@ function recoverMissingMarks() {
 
   if (hasRecoveries && tr.steps.length > 0) {
     window.view.dispatch(tr);
-    // eslint-disable-next-line no-console
-    console.log('Comments: Recovered missing marks for comments');
   }
 }
 
 /**
- * Set the WebSocket provider for sync status tracking
+ * Marks sync as complete and runs mark recovery.
+ */
+function onSyncStable() {
+  if (pluginState.initialSyncComplete) return;
+  pluginState.initialSyncComplete = true;
+  recoverMissingMarks();
+}
+
+/**
+ * Reset the stability timer. Called when document changes occur.
+ * This ensures we wait for the document to be stable before running recovery.
+ */
+function resetSyncStabilityTimer() {
+  pluginState.lastDocChangeTime = Date.now();
+
+  if (pluginState.syncStabilityTimeout) {
+    clearTimeout(pluginState.syncStabilityTimeout);
+    pluginState.syncStabilityTimeout = null;
+  }
+}
+
+/**
+ * Start waiting for document stability after initial sync.
+ * Uses awareness of document changes rather than a fixed delay.
+ */
+function waitForDocumentStability() {
+  if (pluginState.syncStabilityTimeout) {
+    clearTimeout(pluginState.syncStabilityTimeout);
+  }
+
+  const checkStability = () => {
+    const timeSinceLastChange = Date.now() - pluginState.lastDocChangeTime;
+
+    if (timeSinceLastChange >= SYNC_STABILITY_DELAY_MS) {
+      onSyncStable();
+    } else {
+      const remainingTime = SYNC_STABILITY_DELAY_MS - timeSinceLastChange;
+      pluginState.syncStabilityTimeout = setTimeout(checkStability, remainingTime + 50);
+    }
+  };
+
+  pluginState.syncStabilityTimeout = setTimeout(checkStability, SYNC_STABILITY_DELAY_MS);
+}
+
+/**
+ * Set the WebSocket provider for sync status tracking.
+ * Uses document stability detection rather than a fixed delay.
  * @param {WebsocketProvider} provider - The Yjs WebSocket provider
  */
 export function setWsProvider(provider) {
-  const markSyncComplete = () => {
-    setTimeout(() => {
-      initialSyncComplete = true;
-      recoverMissingMarks();
-    }, 2000);
+  const handleSyncComplete = () => {
+    pluginState.lastDocChangeTime = Date.now();
+    waitForDocumentStability();
   };
 
   if (provider.synced) {
-    markSyncComplete();
+    handleSyncComplete();
   } else {
     const handleSynced = (isSynced) => {
       if (isSynced) {
-        markSyncComplete();
+        handleSyncComplete();
         provider.off('synced', handleSynced);
       }
     };
@@ -145,8 +213,8 @@ export function setWsProvider(provider) {
  * @param {string|null} threadId
  */
 export function setActiveThread(threadId) {
-  const previousThreadId = activeThreadId;
-  activeThreadId = threadId;
+  const previousThreadId = pluginState.activeThreadId;
+  pluginState.activeThreadId = threadId;
 
   if (window.view) {
     const { tr } = window.view.state;
@@ -164,7 +232,8 @@ export function setActiveThread(threadId) {
  * @param {object|null} range - { from, to } or null to clear
  */
 export function setPendingCommentRange(range) {
-  pendingCommentRange = range;
+  pluginState.pendingCommentRange = range;
+
   if (window.view) {
     const { tr } = window.view.state;
     window.view.dispatch(tr.setMeta(commentPluginKey, { pendingCommentRange: range }));
@@ -175,11 +244,11 @@ export function setPendingCommentRange(range) {
  * Clear the pending comment range and collapse the selection
  */
 export function clearPendingCommentRange() {
-  showAddWidget = false;
+  pluginState.showAddWidget = false;
 
-  if (addWidgetTimeout) {
-    clearTimeout(addWidgetTimeout);
-    addWidgetTimeout = null;
+  if (pluginState.addWidgetTimeout) {
+    clearTimeout(pluginState.addWidgetTimeout);
+    pluginState.addWidgetTimeout = null;
   }
 
   setPendingCommentRange(null);
@@ -212,7 +281,7 @@ export function isImageSelection(state) {
  * @param {string} threadId - The ID of the comment thread
  * @returns {boolean} True if applied successfully
  */
-export function applyCommentToImage(threadId) {
+function applyCommentToImage(threadId) {
   if (!window.view) return false;
 
   const { state, dispatch } = window.view;
@@ -231,26 +300,24 @@ export function applyCommentToImage(threadId) {
 }
 
 /**
- * Apply the comment mark to the current selection.
+ * Apply the comment mark to the current selection or to text found by matching.
+ * Handles regular text selection, image selection, and table cell selection.
  *
  * @param {string} threadId - The ID of the comment thread
+ * @param {Object} options - Optional parameters for text-based matching
+ * @param {string} options.selectedText - Text to find and mark (for collaborative safety)
+ * @param {Object} options.positionContext - Position context for disambiguation
+ * @param {boolean} options.isImage - Whether this is an image comment
  * @returns {boolean} True if mark was applied successfully
  */
-export function applyCommentMark(threadId) {
+export function applyCommentMark(threadId, options = {}) {
   if (!window.view) return false;
 
   const { state, dispatch } = window.view;
 
-  if (isImageSelection(state)) {
+  if (options.isImage || isImageSelection(state)) {
     return applyCommentToImage(threadId);
   }
-
-  const { from, to } = state.selection;
-
-  if (from === to) return false;
-
-  const selectedText = state.doc.textBetween(from, to, '', '');
-  if (isOnlyWhitespace(selectedText)) return false;
 
   const commentMark = state.schema.marks.comment;
   if (!commentMark) {
@@ -259,9 +326,43 @@ export function applyCommentMark(threadId) {
     return false;
   }
 
-  const tr = state.tr.addMark(from, to, commentMark.create({ threadId }));
-  dispatch(tr);
+  let { tr } = state;
+  const { selection } = state;
 
+  if (selection instanceof CellSelection) {
+    selection.forEachCell((cell, pos) => {
+      const cellStart = pos + 1;
+      const cellEnd = pos + cell.nodeSize - 1;
+      if (cellEnd > cellStart) {
+        tr = tr.addMark(cellStart, cellEnd, commentMark.create({ threadId }));
+      }
+      cell.descendants((node, nodePos) => {
+        if (node.type.name === 'image') {
+          const absolutePos = pos + 1 + nodePos;
+          tr = tr.setNodeMarkup(absolutePos, null, {
+            ...node.attrs,
+            commentThreadId: threadId,
+          });
+        }
+      });
+    });
+  } else if (options.selectedText) {
+    const match = findBestMatchPosition(state, options.selectedText, options.positionContext);
+    if (!match) return false;
+    tr = tr.addMark(match.from, match.to, commentMark.create({ threadId }));
+  } else {
+    const { from, to } = selection;
+    if (from === to) return false;
+
+    const selectedText = state.doc.textBetween(from, to, '', '');
+    if (isOnlyWhitespace(selectedText)) return false;
+
+    tr = tr.addMark(from, to, commentMark.create({ threadId }));
+  }
+
+  if (tr.steps.length === 0) return false;
+
+  dispatch(tr);
   return true;
 }
 
@@ -376,20 +477,53 @@ function findCommentMarkRange(state, threadId) {
 }
 
 /**
- * Check for orphaned comments (comments without corresponding marks).
- * This happens when all the commented text is deleted.
- * Instead of deleting, mark comments as orphaned so the conversation is preserved.
+ * Restore orphaned comments when their marks reappear (e.g., via redo).
+ * This handles the case where user undoes a comment (orphaning it) then redoes.
  *
- * @param {object} state - ProseMirror state
+ * @param {Set} threadIdsWithMarks - Pre-computed set of thread IDs with marks
+ * @param {Map} threads - Pre-computed thread groupings
  */
-function markOrphanedComments(state) {
-  if (!commentsMap) return;
-  if (!initialSyncComplete) {
-    return;
+function restoreOrphanedComments(threadIdsWithMarks, threads) {
+  if (!pluginState.commentsMap) return;
+  if (!pluginState.initialSyncComplete) return;
+
+  const restoredIds = [];
+  for (const [threadId, comments] of threads.entries()) {
+    const rootComment = comments.find((c) => c.parentId === null);
+    const isOrphaned = rootComment?.orphaned;
+
+    if (isOrphaned && threadIdsWithMarks.has(threadId)) {
+      restoredIds.push(threadId);
+    }
   }
 
-  const threadIdsWithMarks = getThreadIdsWithMarks(state);
-  const threads = groupCommentsByThread(commentsMap);
+  if (restoredIds.length > 0) {
+    pluginState.commentsMap.forEach((comment, id) => {
+      if (restoredIds.includes(comment.threadId) && comment.parentId === null) {
+        pluginState.commentsMap.set(id, {
+          ...comment,
+          orphaned: false,
+          orphanedAt: null,
+        });
+      }
+    });
+  }
+}
+
+/**
+ * Check for orphaned comments (comments without corresponding marks).
+ * This happens when all the commented text is deleted.
+ * Instead of deleting, mark comments as orphaned (detached) so the conversation is preserved.
+ *
+ * @param {object} state - ProseMirror state
+ * @param {Set} threadIdsWithMarks - Pre-computed set of thread IDs with marks
+ * @param {Map} threads - Pre-computed thread groupings
+ */
+function markOrphanedComments(state, threadIdsWithMarks, threads) {
+  if (!pluginState.commentsMap) return;
+  if (!pluginState.initialSyncComplete) {
+    return;
+  }
 
   const newlyOrphanedIds = [];
   for (const [threadId, comments] of threads.entries()) {
@@ -403,9 +537,9 @@ function markOrphanedComments(state) {
   }
 
   if (newlyOrphanedIds.length > 0) {
-    commentsMap.forEach((comment, id) => {
+    pluginState.commentsMap.forEach((comment, id) => {
       if (newlyOrphanedIds.includes(comment.threadId) && comment.parentId === null) {
-        commentsMap.set(id, {
+        pluginState.commentsMap.set(id, {
           ...comment,
           orphaned: true,
           orphanedAt: Date.now(),
@@ -413,8 +547,8 @@ function markOrphanedComments(state) {
       }
     });
 
-    if (newlyOrphanedIds.includes(activeThreadId)) {
-      activeThreadId = null;
+    if (newlyOrphanedIds.includes(pluginState.activeThreadId)) {
+      pluginState.activeThreadId = null;
     }
 
     if (window.view) {
@@ -444,14 +578,13 @@ function markOrphanedComments(state) {
  * This keeps the comment metadata in sync with the actual highlighted text.
  *
  * @param {object} state - ProseMirror state
+ * @param {Set} threadIdsWithMarks - Pre-computed set of thread IDs with marks
  */
-function updateCommentSelectedText(state) {
-  if (!commentsMap) return;
+function updateCommentSelectedText(state, threadIdsWithMarks) {
+  if (!pluginState.commentsMap) return;
 
   const commentMark = state.schema.marks.comment;
   if (!commentMark) return;
-
-  const threadIdsWithMarks = getThreadIdsWithMarks(state);
 
   for (const threadId of threadIdsWithMarks) {
     const range = findCommentMarkRange(state, threadId);
@@ -466,21 +599,13 @@ function updateCommentSelectedText(state) {
         currentContext = getPositionContext(state, range.from, range.to);
       }
 
-      let rootCommentId = null;
-      let rootComment = null;
-      commentsMap.forEach((comment, id) => {
-        if (comment.threadId === threadId && comment.parentId === null) {
-          rootCommentId = id;
-          rootComment = comment;
-        }
-      });
-
-      if (rootComment && rootComment.selectedText !== currentText) {
-        const updates = { ...rootComment, selectedText: currentText };
+      const entry = findRootCommentEntry(threadId);
+      if (entry && entry.comment.selectedText !== currentText) {
+        const updates = { ...entry.comment, selectedText: currentText };
         if (currentContext) {
           updates.positionContext = currentContext;
         }
-        commentsMap.set(rootCommentId, updates);
+        pluginState.commentsMap.set(entry.id, updates);
       }
     }
   }
@@ -488,7 +613,7 @@ function updateCommentSelectedText(state) {
 
 /**
  * Check if the current selection is valid for adding a comment.
- * Must be a non-empty text selection OR an image selection.
+ * Must be a non-empty text selection, image selection, or table cell selection.
  *
  * @param {object} state - ProseMirror state
  * @returns {boolean}
@@ -497,6 +622,14 @@ export function hasValidCommentSelection(state) {
   if (!state) return false;
 
   if (isImageSelection(state)) return true;
+
+  if (state.selection instanceof CellSelection) {
+    let hasContent = false;
+    state.selection.forEachCell((cell) => {
+      if (cell.textContent.trim()) hasContent = true;
+    });
+    return hasContent;
+  }
 
   const { from, to } = state.selection;
   if (from === to) return false;
@@ -535,13 +668,18 @@ function createAddCommentWidget() {
 function buildDecorations(state) {
   const decorations = [];
 
-  markOrphanedComments(state);
+  const threadIdsWithMarks = getThreadIdsWithMarks(state);
+  const threads = pluginState.commentsMap
+    ? groupCommentsByThread(pluginState.commentsMap)
+    : new Map();
 
-  updateCommentSelectedText(state);
+  restoreOrphanedComments(threadIdsWithMarks, threads);
+  markOrphanedComments(state, threadIdsWithMarks, threads);
+  updateCommentSelectedText(state, threadIdsWithMarks);
 
   state.doc.descendants((node, pos) => {
     if (node.type.name === 'image' && node.attrs.commentThreadId) {
-      const isActive = node.attrs.commentThreadId === activeThreadId;
+      const isActive = node.attrs.commentThreadId === pluginState.activeThreadId;
       const highlightClass = isActive
         ? 'da-comment-highlight da-comment-highlight-active'
         : 'da-comment-highlight';
@@ -549,16 +687,16 @@ function buildDecorations(state) {
     }
   });
 
-  if (activeThreadId) {
-    const range = findCommentMarkRange(state, activeThreadId);
+  if (pluginState.activeThreadId) {
+    const range = findCommentMarkRange(state, pluginState.activeThreadId);
     if (range && !range.isImage) {
       const attrs = { class: 'da-comment-highlight-active' };
       decorations.push(Decoration.inline(range.from, range.to, attrs));
     }
   }
 
-  if (pendingCommentRange) {
-    const { from, to, isImage } = pendingCommentRange;
+  if (pluginState.pendingCommentRange) {
+    const { from, to, isImage } = pluginState.pendingCommentRange;
     if (from < to && to <= state.doc.content.size) {
       const attrs = { class: 'da-comment-highlight-pending' };
       if (isImage) {
@@ -569,7 +707,10 @@ function buildDecorations(state) {
     }
   }
 
-  if (!pendingCommentRange && !activeThreadId && showAddWidget && hasValidCommentSelection(state)) {
+  const isCellSel = state.selection instanceof CellSelection;
+  const { pendingCommentRange, activeThreadId, showAddWidget } = pluginState;
+  const showWidget = !pendingCommentRange && !activeThreadId && showAddWidget && !isCellSel;
+  if (showWidget && hasValidCommentSelection(state)) {
     const { from, to } = state.selection;
     const commentMark = state.schema.marks.comment;
     let hasExistingComment = false;
@@ -620,7 +761,7 @@ function handleClick(view, pos) {
   const { state } = view;
   const commentMark = state.schema.marks.comment;
   if (!commentMark) {
-    if (activeThreadId) {
+    if (pluginState.activeThreadId) {
       setActiveThread(null);
     }
     return false;
@@ -652,7 +793,7 @@ function handleClick(view, pos) {
     return true;
   }
 
-  if (activeThreadId) {
+  if (pluginState.activeThreadId) {
     setActiveThread(null);
   }
 
@@ -681,8 +822,8 @@ function maintainCommentMarks(tr, oldState, newState) {
   if (!commentMark) return null;
 
   const validThreadIds = new Set();
-  if (commentsMap) {
-    commentsMap.forEach((comment) => {
+  if (pluginState.commentsMap) {
+    pluginState.commentsMap.forEach((comment) => {
       if (comment && comment.threadId) {
         validThreadIds.add(comment.threadId);
       }
@@ -707,6 +848,10 @@ function maintainCommentMarks(tr, oldState, newState) {
       });
     }
   });
+
+  if (tr.getMeta('paste')) {
+    return fixTr;
+  }
 
   tr.steps.forEach((step, i) => {
     const map = tr.mapping.maps[i];
@@ -756,55 +901,6 @@ function maintainCommentMarks(tr, oldState, newState) {
     });
   });
 
-  if (fixTr || tr.docChanged) {
-    const docToCheck = fixTr ? fixTr.doc : newState.doc;
-    const trToUse = fixTr || newState.tr;
-    let hasChanges = !!fixTr;
-
-    validThreadIds.forEach((threadId) => {
-      let markStart = null;
-      let markEnd = null;
-
-      docToCheck.descendants((node, pos) => {
-        if (node.isText) {
-          const mark = node.marks.find(
-            (m) => m.type === commentMark && m.attrs.threadId === threadId,
-          );
-          if (mark) {
-            if (markStart === null || pos < markStart) {
-              markStart = pos;
-            }
-            if (markEnd === null || pos + node.nodeSize > markEnd) {
-              markEnd = pos + node.nodeSize;
-            }
-          }
-        }
-      });
-
-      if (markStart !== null && markEnd !== null) {
-        docToCheck.nodesBetween(markStart, markEnd, (node, pos) => {
-          if (node.isText) {
-            const hasMark = node.marks.some(
-              (m) => m.type === commentMark && m.attrs.threadId === threadId,
-            );
-            if (!hasMark) {
-              const mark = commentMark.create({ threadId });
-              if (!fixTr) {
-                fixTr = trToUse;
-              }
-              fixTr = fixTr.addMark(pos, pos + node.nodeSize, mark);
-              hasChanges = true;
-            }
-          }
-        });
-      }
-    });
-
-    if (hasChanges && fixTr && fixTr.steps.length > 0) {
-      return fixTr;
-    }
-  }
-
   return fixTr;
 }
 
@@ -815,7 +911,37 @@ function maintainCommentMarks(tr, oldState, newState) {
 function dispatchSelectionChange(state) {
   const { from, to } = state.selection;
   const hasSelection = from !== to || isImageSelection(state);
-  window.dispatchEvent(new CustomEvent('da-selection-change', { detail: { hasSelection, from, to } }));
+  window.dispatchEvent(new CustomEvent('da-selection-change', { detail: { hasSelection } }));
+}
+
+/**
+ * Recursively strip comment marks and image comment attributes from a fragment.
+ * @param {Object} fragment - ProseMirror fragment
+ * @param {Object} schema - ProseMirror schema
+ * @returns {Object} New fragment with comment marks removed
+ */
+function stripCommentMarksFromFragment(fragment, schema) {
+  const commentMarkType = schema.marks.comment;
+
+  const nodes = [];
+  fragment.forEach((node) => {
+    if (node.isText) {
+      if (commentMarkType) {
+        const newMarks = node.marks.filter((m) => m.type !== commentMarkType);
+        nodes.push(node.mark(newMarks));
+      } else {
+        nodes.push(node);
+      }
+    } else if (node.type.name === 'image' && node.attrs.commentThreadId) {
+      const newAttrs = { ...node.attrs, commentThreadId: null };
+      nodes.push(node.type.create(newAttrs));
+    } else {
+      const newContent = stripCommentMarksFromFragment(node.content, schema);
+      nodes.push(node.copy(newContent));
+    }
+  });
+
+  return fragment.constructor.fromArray(nodes);
 }
 
 /**
@@ -845,6 +971,11 @@ export function createCommentPlugin() {
     view() {
       return {
         update(view, prevState) {
+          const docChanged = view.state.doc !== prevState.doc;
+          if (docChanged && !pluginState.initialSyncComplete) {
+            resetSyncStabilityTimer();
+          }
+
           const { from, to } = view.state.selection;
           const { from: prevFrom, to: prevTo } = prevState.selection;
           const selectionKey = `${from}-${to}`;
@@ -854,27 +985,31 @@ export function createCommentPlugin() {
             lastSelectionKey = selectionKey;
             dispatchSelectionChange(view.state);
 
-            if (addWidgetTimeout) {
-              clearTimeout(addWidgetTimeout);
-              addWidgetTimeout = null;
+            if (pluginState.addWidgetTimeout) {
+              clearTimeout(pluginState.addWidgetTimeout);
+              pluginState.addWidgetTimeout = null;
             }
-            showAddWidget = false;
+            pluginState.showAddWidget = false;
 
             const hasSelection = from !== to;
             if (hasSelection && hasValidCommentSelection(view.state)) {
-              addWidgetTimeout = setTimeout(() => {
-                showAddWidget = true;
-                addWidgetTimeout = null;
+              pluginState.addWidgetTimeout = setTimeout(() => {
+                pluginState.showAddWidget = true;
+                pluginState.addWidgetTimeout = null;
                 const { tr } = view.state;
                 view.dispatch(tr.setMeta(commentPluginKey, { showWidget: true }));
-              }, 500);
+              }, ADD_WIDGET_DELAY_MS);
             }
           }
         },
         destroy() {
-          if (addWidgetTimeout) {
-            clearTimeout(addWidgetTimeout);
-            addWidgetTimeout = null;
+          if (pluginState.addWidgetTimeout) {
+            clearTimeout(pluginState.addWidgetTimeout);
+            pluginState.addWidgetTimeout = null;
+          }
+          if (pluginState.syncStabilityTimeout) {
+            clearTimeout(pluginState.syncStabilityTimeout);
+            pluginState.syncStabilityTimeout = null;
           }
         },
       };
@@ -899,6 +1034,10 @@ export function createCommentPlugin() {
         return this.getState(state);
       },
       handleClick,
+      transformPasted(slice, view) {
+        const strippedContent = stripCommentMarksFromFragment(slice.content, view.state.schema);
+        return new Slice(strippedContent, slice.openStart, slice.openEnd);
+      },
     },
   });
 }

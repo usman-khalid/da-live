@@ -18,10 +18,12 @@ import {
   getRootComment,
   createReply,
   resolveComment,
+  unresolveComment,
   formatTimestamp,
   formatFullTimestamp,
   getInitials,
   getPositionContext,
+  findBestMatchPosition,
   REACTION_EMOJIS,
   addReaction,
   removeReaction,
@@ -64,6 +66,7 @@ export default class DaComments extends LitElement {
     _status: { state: true },
     _reactionPickerCommentId: { state: true },
     _confirmDeleteThread: { state: true },
+    _pendingScrollToComment: { state: true },
   };
 
   constructor() {
@@ -82,12 +85,22 @@ export default class DaComments extends LitElement {
     this._hasValidSelection = false;
     this._reactionPickerCommentId = null;
     this._confirmDeleteThread = null;
+    this._pendingScrollToComment = null;
     this.handleCommentClicked = this.handleCommentClicked.bind(this);
     this.handleActiveChanged = this.handleActiveChanged.bind(this);
     this.handleOrphanedComments = this.handleOrphanedComments.bind(this);
     this.handleOutsideClick = this.handleOutsideClick.bind(this);
     this.handleSelectionChange = this.handleSelectionChange.bind(this);
     this.handleCommentAddRequest = this.handleCommentAddRequest.bind(this);
+  }
+
+  resetFormState() {
+    this._isCreatingNew = false;
+    this._pendingSelection = null;
+    this._replyingTo = null;
+    this._commentText = '';
+    this._menuOpen = null;
+    this._editingCommentId = null;
   }
 
   connectedCallback() {
@@ -231,15 +244,8 @@ export default class DaComments extends LitElement {
     if (!threadId) return;
 
     this.emitRequestOpen();
-
     this._activeThreadId = threadId;
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._replyingTo = null;
-    this._commentText = '';
-    this._menuOpen = null;
-    this._editingCommentId = null;
-
+    this.resetFormState();
     this.requestUpdate();
     requestAnimationFrame(() => {
       const threadDetail = this.shadowRoot?.querySelector('.da-thread-detail');
@@ -258,11 +264,7 @@ export default class DaComments extends LitElement {
     if (this._activeThreadId !== threadId) {
       this._activeThreadId = threadId;
       if (!threadId) {
-        this._isCreatingNew = false;
-        this._pendingSelection = null;
-        this._replyingTo = null;
-        this._menuOpen = null;
-        this._editingCommentId = null;
+        this.resetFormState();
       }
       this.requestUpdate();
     }
@@ -294,6 +296,14 @@ export default class DaComments extends LitElement {
         queueMicrotask(() => this.startAddComment());
       }
     }
+
+    if (this._pendingScrollToComment && this._threads.has(this._pendingScrollToComment)) {
+      const targetId = this._pendingScrollToComment;
+      this._pendingScrollToComment = null;
+      requestAnimationFrame(() => {
+        this.scrollToCommentHighlight(targetId);
+      });
+    }
   }
 
   get commentCount() {
@@ -312,24 +322,12 @@ export default class DaComments extends LitElement {
    */
   openInitialComment(commentId) {
     this._activeThreadId = commentId;
+    this._pendingScrollToComment = commentId;
     setActiveThread(commentId);
 
-    const tryScrollToHighlight = (attempts = 0) => {
-      if (attempts > 20) return;
-
-      if (this._threads.has(commentId)) {
-        setTimeout(() => {
-          this.scrollToCommentHighlight(commentId);
-        }, 200);
-
-        const url = new URL(window.location.href);
-        url.searchParams.delete('comment');
-        window.history.replaceState({}, '', url.toString());
-      } else {
-        setTimeout(() => tryScrollToHighlight(attempts + 1), 500);
-      }
-    };
-    tryScrollToHighlight();
+    const url = new URL(window.location.href);
+    url.searchParams.delete('comment');
+    window.history.replaceState({}, '', url.toString());
   }
 
   /**
@@ -358,27 +356,15 @@ export default class DaComments extends LitElement {
 
   selectThread(threadId) {
     this._activeThreadId = threadId;
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._replyingTo = null;
-    this._commentText = '';
-    this._menuOpen = null;
-    this._editingCommentId = null;
+    this.resetFormState();
     setActiveThread(threadId);
-
-    setTimeout(() => {
-      this.scrollToCommentHighlight(threadId);
-    }, 100);
+    this._pendingScrollToComment = threadId;
+    this.requestUpdate();
   }
 
   backToList() {
     this._activeThreadId = null;
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._replyingTo = null;
-    this._commentText = '';
-    this._menuOpen = null;
-    this._editingCommentId = null;
+    this.resetFormState();
     setActiveThread(null);
   }
 
@@ -449,9 +435,7 @@ export default class DaComments extends LitElement {
   }
 
   cancelNewComment() {
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._commentText = '';
+    this.resetFormState();
     clearPendingCommentRange();
   }
 
@@ -486,16 +470,15 @@ export default class DaComments extends LitElement {
 
     this.commentsMap.set(comment.id, comment);
 
-    if (!applyCommentMark(commentId)) {
+    const markOptions = { selectedText, positionContext, isImage };
+    if (!applyCommentMark(commentId, markOptions)) {
       this.commentsMap.delete(comment.id);
       this.cancelNewComment();
       return;
     }
 
     this._activeThreadId = comment.threadId;
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._commentText = '';
+    this.resetFormState();
     setActiveThread(comment.threadId);
     clearPendingCommentRange();
   }
@@ -615,6 +598,46 @@ export default class DaComments extends LitElement {
     this._replyingTo = null;
     this._menuOpen = null;
     setActiveThread(null);
+  }
+
+  unresolveThread(threadId) {
+    const comments = this._threads.get(threadId);
+    if (!comments) return;
+
+    const rootComment = getRootComment(comments);
+    if (!rootComment) return;
+
+    // Try to re-add the mark if we can find the original text
+    const { selectedText, positionContext } = rootComment;
+    let markRestored = false;
+
+    if (selectedText && window.view) {
+      const { state } = window.view;
+      const match = findBestMatchPosition(state, selectedText, positionContext);
+
+      if (match) {
+        const commentMark = state.schema.marks.comment;
+        if (commentMark) {
+          const tr = state.tr.addMark(match.from, match.to, commentMark.create({ threadId }));
+          window.view.dispatch(tr);
+          markRestored = true;
+        }
+      }
+    }
+
+    // Unresolve the comment
+    const unresolved = unresolveComment(rootComment);
+    this.commentsMap.set(rootComment.id, unresolved);
+
+    if (!markRestored) {
+      // Mark as orphaned since we couldn't find the text
+      this.commentsMap.set(rootComment.id, {
+        ...unresolved,
+        orphaned: true,
+        orphanedAt: Date.now(),
+      });
+      this.setStatus('Comment unresolved but detached', 'Original text could not be found', 'info');
+    }
   }
 
   deleteThread(threadId) {
@@ -849,6 +872,9 @@ export default class DaComments extends LitElement {
     if (isResolved) {
       return html`
         <div class="da-comment-thread-actions">
+          <button class="da-btn-unresolve" @click=${() => this.unresolveThread(this._activeThreadId)}>
+            Reopen
+          </button>
           <button class="da-btn-delete" @click=${() => this.deleteThread(this._activeThreadId)}>
             Delete thread
           </button>

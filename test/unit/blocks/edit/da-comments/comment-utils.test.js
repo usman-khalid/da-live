@@ -2,6 +2,7 @@ import { expect } from '@esm-bundle/chai';
 import {
   createReply,
   resolveComment,
+  unresolveComment,
   groupCommentsByThread,
   getRootComment,
   formatTimestamp,
@@ -89,6 +90,61 @@ describe('comment-utils', () => {
     });
   });
 
+  describe('unresolveComment', () => {
+    it('clears resolved status from a comment', () => {
+      const comment = {
+        id: 'comment-123',
+        threadId: 'thread-456',
+        content: 'Test comment',
+        resolved: true,
+        resolvedBy: { id: 'resolver-789', name: 'Jane Smith' },
+        resolvedAt: 1234567890,
+      };
+
+      const unresolved = unresolveComment(comment);
+
+      expect(unresolved.resolved).to.be.false;
+      expect(unresolved.resolvedBy).to.be.null;
+      expect(unresolved.resolvedAt).to.be.null;
+      expect(unresolved.content).to.equal('Test comment');
+    });
+
+    it('preserves original comment properties', () => {
+      const comment = {
+        id: 'comment-123',
+        threadId: 'thread-456',
+        author: { id: 'author-1', name: 'Author' },
+        content: 'Test',
+        reactions: { '👍': [{ userId: 'u1' }] },
+        resolved: true,
+        resolvedBy: { id: 'r1', name: 'Resolver' },
+        resolvedAt: 1234567890,
+      };
+
+      const unresolved = unresolveComment(comment);
+
+      expect(unresolved.id).to.equal('comment-123');
+      expect(unresolved.threadId).to.equal('thread-456');
+      expect(unresolved.author).to.deep.equal({ id: 'author-1', name: 'Author' });
+      expect(unresolved.reactions).to.deep.equal({ '👍': [{ userId: 'u1' }] });
+    });
+
+    it('works on already unresolved comment', () => {
+      const comment = {
+        id: 'comment-123',
+        resolved: false,
+        resolvedBy: null,
+        resolvedAt: null,
+      };
+
+      const unresolved = unresolveComment(comment);
+
+      expect(unresolved.resolved).to.be.false;
+      expect(unresolved.resolvedBy).to.be.null;
+      expect(unresolved.resolvedAt).to.be.null;
+    });
+  });
+
   describe('groupCommentsByThread', () => {
     it('groups comments by threadId using Map', () => {
       const commentsMap = new Map();
@@ -101,19 +157,6 @@ describe('comment-utils', () => {
       expect(threads.size).to.equal(2);
       expect(threads.get('thread-1').length).to.equal(2);
       expect(threads.get('thread-2').length).to.equal(1);
-    });
-
-    it('groups comments by threadId using plain object', () => {
-      const commentsObj = {
-        c1: { threadId: 'thread-1', parentId: null, createdAt: 1000 },
-        c2: { threadId: 'thread-1', parentId: 'c1', createdAt: 2000 },
-        c3: { threadId: 'thread-2', parentId: null, createdAt: 3000 },
-      };
-
-      const threads = groupCommentsByThread(commentsObj);
-
-      expect(threads.size).to.equal(2);
-      expect(threads.get('thread-1').length).to.equal(2);
     });
 
     it('sorts comments by createdAt within each thread', () => {

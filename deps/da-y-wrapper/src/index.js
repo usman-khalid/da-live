@@ -26,6 +26,7 @@ import {
   splitCell,
   deleteTable,
   isInTable,
+  CellSelection,
 } from 'prosemirror-tables';
 
 // yjs
@@ -84,6 +85,7 @@ export {
   mergeCells,
   splitCell,
   deleteTable,
+  CellSelection,
   gapCursor,
   MenuItem,
   Dropdown,
