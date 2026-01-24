@@ -665,7 +665,9 @@ function createAddCommentWidget() {
   button.className = 'da-add-comment-widget';
   button.setAttribute('title', 'Add comment');
   button.setAttribute('type', 'button');
-  button.textContent = '+';
+  button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 20 20">
+    <path fill="currentColor" d="M17 2H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3l4 3 4-3h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 12h-3.59L10 17l-3.41-3H3V4h14v10z"/>
+  </svg>`;
   button.addEventListener('mousedown', (e) => {
     e.preventDefault();
     e.stopPropagation();

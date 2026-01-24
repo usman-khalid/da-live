@@ -1047,23 +1047,24 @@ img.da-comment-highlight-pending {
   width: 20px;
   height: 20px;
   margin-left: 4px;
-  padding: 0;
+  padding: var(--spacing-75);
   background-color: var(--comment-highlight-border);
   border: none;
   border-radius: 50%;
   color: #000;
-  font-size: 16px;
-  font-weight: bold;
-  line-height: 1;
   cursor: pointer;
   vertical-align: middle;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
-  transition: background-color 0.2s, transform 0.1s;
+  transition: color 0.2s, transform 0.1s;
   animation: da-widget-pop-in 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 
+  /* stylelint-disable no-descending-specificity */
+  & svg {
+    display: block;
+  }
+
   &:hover {
-    background-color: var(--comment-highlight-border-active);
-    transform: scale(1.1);
+    color: var(--spectrum-blue-900);
+    transform: scale(1.15);
   }
 
   &:active {
