@@ -54,41 +54,27 @@ export default class DaComments extends LitElement {
     open: { type: Boolean },
     _threads: { state: true },
     _activeThreadId: { state: true },
-    _showResolved: { state: true },
-    _showOrphaned: { state: true },
-    _isCreatingNew: { state: true },
-    _pendingSelection: { state: true },
-    _commentText: { state: true },
-    _replyingTo: { state: true },
-    _menuOpen: { state: true },
-    _editingCommentId: { state: true },
-    _editText: { state: true },
-    _hasValidSelection: { state: true },
+    _viewFilters: { state: true }, // { resolved, orphaned }
+    _formState: { state: true }, // { mode: 'new'|'reply'|null, selection, text, replyTo }
+    _popover: { state: true }, // { type: 'menu'|'reactions'|'delete', targetId } | null
+    _editing: { state: true }, // { id, text } | null
     _status: { state: true },
-    _reactionPickerCommentId: { state: true },
-    _confirmDeleteThread: { state: true },
-    _pendingScrollToComment: { state: true },
   };
+
+  get canAddComment() {
+    return window.view ? hasValidCommentSelection(window.view.state) : false;
+  }
 
   constructor() {
     super();
     this._threads = new Map();
     this._activeThreadId = null;
-    this._showResolved = false;
-    this._showOrphaned = false;
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._commentText = '';
-    this._replyingTo = null;
-    this._menuOpen = null;
-    this._editingCommentId = null;
-    this._editText = '';
-    this._hasValidSelection = false;
-    this._reactionPickerCommentId = null;
-    this._confirmDeleteThread = null;
+    this._viewFilters = { resolved: false, orphaned: false };
+    this._formState = null;
+    this._popover = null;
+    this._editing = null;
     this._pendingScrollToComment = null;
-    this.handleCommentClicked = this.handleCommentClicked.bind(this);
-    this.handleActiveChanged = this.handleActiveChanged.bind(this);
+    this.handleCommentFocus = this.handleCommentFocus.bind(this);
     this.handleOrphanedComments = this.handleOrphanedComments.bind(this);
     this.handleOutsideClick = this.handleOutsideClick.bind(this);
     this.handleSelectionChange = this.handleSelectionChange.bind(this);
@@ -96,19 +82,15 @@ export default class DaComments extends LitElement {
   }
 
   resetFormState() {
-    this._isCreatingNew = false;
-    this._pendingSelection = null;
-    this._replyingTo = null;
-    this._commentText = '';
-    this._menuOpen = null;
-    this._editingCommentId = null;
+    this._formState = null;
+    this._popover = null;
+    this._editing = null;
   }
 
   connectedCallback() {
     super.connectedCallback();
     this.shadowRoot.adoptedStyleSheets = [sheet, toastSheet];
-    window.addEventListener('da-comment-clicked', this.handleCommentClicked);
-    window.addEventListener('da-comment-active-changed', this.handleActiveChanged);
+    window.addEventListener('da-comment-focus', this.handleCommentFocus);
     window.addEventListener('da-comments-orphaned', this.handleOrphanedComments);
     window.addEventListener('da-selection-change', this.handleSelectionChange);
     window.addEventListener('da-comment-add', this.handleCommentAddRequest);
@@ -119,8 +101,7 @@ export default class DaComments extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    window.removeEventListener('da-comment-clicked', this.handleCommentClicked);
-    window.removeEventListener('da-comment-active-changed', this.handleActiveChanged);
+    window.removeEventListener('da-comment-focus', this.handleCommentFocus);
     window.removeEventListener('da-comments-orphaned', this.handleOrphanedComments);
     window.removeEventListener('da-selection-change', this.handleSelectionChange);
     window.removeEventListener('da-comment-add', this.handleCommentAddRequest);
@@ -152,19 +133,15 @@ export default class DaComments extends LitElement {
   }
 
   handleOutsideClick(event) {
-    if (!this._menuOpen && !this._reactionPickerCommentId) return;
+    if (!this._popover) return;
 
     const path = event.composedPath();
-    const isInsideMenu = path.some((el) => el.classList?.contains('da-comment-menu'));
-    const isInsideReactionPicker = path.some(
-      (el) => el.classList?.contains('da-reactions') || el.classList?.contains('da-reaction-picker'),
-    );
+    const isInside = path.some((el) => el.classList?.contains('da-comment-menu')
+      || el.classList?.contains('da-reactions')
+      || el.classList?.contains('da-reaction-picker'));
 
-    if (this._menuOpen && !isInsideMenu) {
-      this._menuOpen = null;
-    }
-    if (this._reactionPickerCommentId && !isInsideReactionPicker) {
-      this._reactionPickerCommentId = null;
+    if (!isInside) {
+      this._popover = null;
     }
   }
 
@@ -204,12 +181,9 @@ export default class DaComments extends LitElement {
    * Handle selection change events from ProseMirror plugin
    */
   handleSelectionChange() {
-    const isValid = window.view ? hasValidCommentSelection(window.view.state) : false;
-    if (this._hasValidSelection !== isValid) {
-      this._hasValidSelection = isValid;
-      if (!isValid && this._isCreatingNew) {
-        this.cancelNewComment();
-      }
+    // Cancel new comment creation if selection is lost
+    if (!this.canAddComment && this._formState?.mode === 'new') {
+      this.cancelNewComment();
     }
   }
 
@@ -227,7 +201,7 @@ export default class DaComments extends LitElement {
   }
 
   handleClose() {
-    if (this._isCreatingNew) {
+    if (this._formState?.mode === 'new') {
       this.cancelNewComment();
     }
     clearPendingCommentRange();
@@ -237,37 +211,24 @@ export default class DaComments extends LitElement {
   }
 
   /**
-   * Handle click on comment highlight in document.
-   * Opens the thread detail view for the clicked comment.
+   * Unified handler for comment focus events from ProseMirror plugin.
+   * Handles both clicking on highlights and active thread changes.
    */
-  handleCommentClicked(event) {
+  handleCommentFocus(event) {
     const { threadId } = event.detail;
-    if (!threadId) return;
+    if (this._activeThreadId === threadId) return;
 
-    this.emitRequestOpen();
     this._activeThreadId = threadId;
     this.resetFormState();
-    this.requestUpdate();
-    requestAnimationFrame(() => {
-      const threadDetail = this.shadowRoot?.querySelector('.da-thread-detail');
-      if (threadDetail) {
-        threadDetail.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    });
-  }
 
-  /**
-   * Handle active thread changes from the plugin (e.g., clicking outside a comment clears it).
-   */
-  handleActiveChanged(event) {
-    const { threadId } = event.detail;
-
-    if (this._activeThreadId !== threadId) {
-      this._activeThreadId = threadId;
-      if (!threadId) {
-        this.resetFormState();
-      }
-      this.requestUpdate();
+    if (threadId) {
+      this.emitRequestOpen();
+      requestAnimationFrame(() => {
+        const threadDetail = this.shadowRoot?.querySelector('.da-thread-detail');
+        if (threadDetail) {
+          threadDetail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
     }
   }
 
@@ -284,16 +245,13 @@ export default class DaComments extends LitElement {
       }
     }
 
-    if (changedProps.has('_threads')) {
-      this.emitCountChanged(this.commentCount);
-    }
-
-    if (changedProps.has('_isCreatingNew') && this._isCreatingNew) {
+    if (changedProps.has('_formState') && this._formState?.mode === 'new') {
       this.focusCommentTextarea();
     }
 
+    // Auto-start comment creation when panel opens with a valid selection
     if (changedProps.has('open') && this.open && !changedProps.get('open')) {
-      if (this._hasValidSelection && !this._isCreatingNew && !this._activeThreadId) {
+      if (this.canAddComment && !this._formState && !this._activeThreadId) {
         queueMicrotask(() => this.startAddComment());
       }
     }
@@ -305,17 +263,6 @@ export default class DaComments extends LitElement {
         this.scrollToCommentHighlight(targetId);
       });
     }
-  }
-
-  get commentCount() {
-    let count = 0;
-    this._threads.forEach((comments) => {
-      const root = getRootComment(comments);
-      if (root && !root.resolved && !root.orphaned) {
-        count += 1;
-      }
-    });
-    return count;
   }
 
   /**
@@ -352,6 +299,15 @@ export default class DaComments extends LitElement {
       setActiveThread(null);
     }
 
+    let count = 0;
+    this._threads.forEach((comments) => {
+      const root = getRootComment(comments);
+      if (root && !root.resolved && !root.orphaned) {
+        count += 1;
+      }
+    });
+    this.emitCountChanged(count);
+
     this.requestUpdate();
   }
 
@@ -360,7 +316,6 @@ export default class DaComments extends LitElement {
     this.resetFormState();
     setActiveThread(threadId);
     this._pendingScrollToComment = threadId;
-    this.requestUpdate();
   }
 
   backToList() {
@@ -370,19 +325,18 @@ export default class DaComments extends LitElement {
   }
 
   handleTextareaInput(event) {
-    this._commentText = event.target.value;
+    if (!this._formState) return;
+    this._formState = { ...this._formState, text: event.target.value };
   }
 
   handleEditInput(event) {
-    this._editText = event.target.value;
+    if (!this._editing) return;
+    this._editing = { ...this._editing, text: event.target.value };
   }
 
   toggleReactionPicker(commentId) {
-    if (this._reactionPickerCommentId === commentId) {
-      this._reactionPickerCommentId = null;
-    } else {
-      this._reactionPickerCommentId = commentId;
-    }
+    const isOpen = this._popover?.type === 'reactions' && this._popover.targetId === commentId;
+    this._popover = isOpen ? null : { type: 'reactions', targetId: commentId };
   }
 
   toggleReaction(comment, emoji) {
@@ -398,7 +352,7 @@ export default class DaComments extends LitElement {
     }
 
     this.commentsMap.set(comment.id, updatedComment);
-    this._reactionPickerCommentId = null;
+    this._popover = null;
   }
 
   startAddComment() {
@@ -426,10 +380,13 @@ export default class DaComments extends LitElement {
       positionContext = getPositionContext(state, from, to);
     }
 
-    this._pendingSelection = { from, to, selectedText, isImage, positionContext };
-    this._isCreatingNew = true;
+    this._formState = {
+      mode: 'new',
+      selection: { from, to, selectedText, isImage, positionContext },
+      text: '',
+      replyTo: null,
+    };
     this._activeThreadId = null;
-    this._commentText = '';
     setActiveThread(null);
 
     setPendingCommentRange({ from, to, isImage });
@@ -442,12 +399,12 @@ export default class DaComments extends LitElement {
 
   submitNewComment(event) {
     event.preventDefault();
-    const content = this._commentText.trim();
+    const content = this._formState?.text?.trim();
 
-    if (!content || !this._pendingSelection) return;
+    if (!content || !this._formState?.selection) return;
 
     const commentId = crypto.randomUUID();
-    const { selectedText, isImage, positionContext } = this._pendingSelection;
+    const { selectedText, isImage, positionContext } = this._formState.selection;
 
     const comment = {
       id: commentId,
@@ -486,9 +443,9 @@ export default class DaComments extends LitElement {
 
   submitReply(event) {
     event.preventDefault();
-    const content = this._commentText.trim();
+    const content = this._formState?.text?.trim();
 
-    if (!content || !this._replyingTo) return;
+    if (!content || !this._formState?.replyTo) return;
 
     const rootComment = this._threads.get(this._activeThreadId)?.[0];
     if (rootComment) {
@@ -496,49 +453,46 @@ export default class DaComments extends LitElement {
       this.commentsMap.set(reply.id, reply);
     }
 
-    this._replyingTo = null;
-    this._commentText = '';
+    this._formState = null;
   }
 
   toggleMenu(event, commentId) {
     event.stopPropagation();
-    this._menuOpen = this._menuOpen === commentId ? null : commentId;
+    const isOpen = this._popover?.type === 'menu' && this._popover.targetId === commentId;
+    this._popover = isOpen ? null : { type: 'menu', targetId: commentId };
   }
 
   startEdit(commentId) {
     const comment = this.commentsMap.get(commentId);
     if (comment) {
-      this._editingCommentId = commentId;
-      this._editText = comment.content;
-      this._menuOpen = null;
+      this._editing = { id: commentId, text: comment.content };
+      this._popover = null;
     }
   }
 
   saveEdit(event) {
     event.preventDefault();
-    const content = this._editText.trim();
-    if (!content || !this._editingCommentId) return;
+    const content = this._editing?.text?.trim();
+    if (!content || !this._editing?.id) return;
 
-    const comment = this.commentsMap.get(this._editingCommentId);
+    const comment = this.commentsMap.get(this._editing.id);
     if (comment) {
-      this.commentsMap.set(this._editingCommentId, {
+      this.commentsMap.set(this._editing.id, {
         ...comment,
         content,
         updatedAt: Date.now(),
       });
     }
 
-    this._editingCommentId = null;
-    this._editText = '';
+    this._editing = null;
   }
 
   cancelEdit() {
-    this._editingCommentId = null;
-    this._editText = '';
+    this._editing = null;
   }
 
   deleteComment(commentId) {
-    this._menuOpen = null;
+    this._popover = null;
 
     const comments = this._threads.get(this._activeThreadId);
     if (!comments) return;
@@ -547,7 +501,7 @@ export default class DaComments extends LitElement {
     const isRoot = rootComment?.id === commentId;
 
     if (isRoot && comments.length > 1) {
-      this._confirmDeleteThread = { threadId: this._activeThreadId };
+      this._popover = { type: 'delete', threadId: this._activeThreadId };
       return;
     }
 
@@ -562,12 +516,12 @@ export default class DaComments extends LitElement {
   }
 
   confirmDeleteThread() {
-    if (!this._confirmDeleteThread) return;
+    if (this._popover?.type !== 'delete') return;
 
-    const { threadId } = this._confirmDeleteThread;
+    const { threadId } = this._popover;
     const comments = this._threads.get(threadId);
     if (!comments) {
-      this._confirmDeleteThread = null;
+      this._popover = null;
       return;
     }
 
@@ -577,12 +531,12 @@ export default class DaComments extends LitElement {
     });
 
     this._activeThreadId = null;
-    this._confirmDeleteThread = null;
+    this._popover = null;
     setActiveThread(null);
   }
 
   cancelDeleteConfirm() {
-    this._confirmDeleteThread = null;
+    this._popover = null;
   }
 
   resolveThread(threadId) {
@@ -596,8 +550,7 @@ export default class DaComments extends LitElement {
     removeCommentMark(threadId);
 
     this._activeThreadId = null;
-    this._replyingTo = null;
-    this._menuOpen = null;
+    this.resetFormState();
     setActiveThread(null);
   }
 
@@ -652,8 +605,7 @@ export default class DaComments extends LitElement {
     });
 
     this._activeThreadId = null;
-    this._replyingTo = null;
-    this._menuOpen = null;
+    this.resetFormState();
     setActiveThread(null);
   }
 
@@ -665,19 +617,37 @@ export default class DaComments extends LitElement {
     const url = new URL(window.location.href);
     url.searchParams.set('comment', this._activeThreadId);
     navigator.clipboard.writeText(url.toString());
-    this._menuOpen = null;
+    this._popover = null;
 
     this.setStatus('Copied', 'The link was copied to the clipboard.');
     setTimeout(() => { this.setStatus(); }, 3000);
   }
 
-  getThreadsSorted() {
-    const threadsArray = Array.from(this._threads.entries());
-    return threadsArray.sort((a, b) => {
-      const rootA = getRootComment(a[1]);
-      const rootB = getRootComment(b[1]);
-      return rootB.createdAt - rootA.createdAt;
-    });
+  categorizeThreads() {
+    const active = [];
+    const orphaned = [];
+    const resolved = [];
+
+    for (const [threadId, comments] of this._threads.entries()) {
+      const root = getRootComment(comments);
+      const entry = [threadId, comments, root];
+      if (root.resolved) resolved.push(entry);
+      else if (root.orphaned) orphaned.push(entry);
+      else active.push(entry);
+    }
+
+    const sortFn = (a, b) => b[2].createdAt - a[2].createdAt;
+    return {
+      active: active.sort(sortFn),
+      orphaned: orphaned.sort(sortFn),
+      resolved: resolved.sort(sortFn),
+    };
+  }
+
+  getStatusClass(rootComment) {
+    if (rootComment.resolved) return 'resolved';
+    if (rootComment.orphaned) return 'orphaned';
+    return '';
   }
 
   renderAvatar(author) {
@@ -693,12 +663,7 @@ export default class DaComments extends LitElement {
   renderThreadPreview(threadId, comments) {
     const rootComment = getRootComment(comments);
     const replyCount = comments.length - 1;
-    const isResolved = rootComment.resolved;
-    const isOrphaned = rootComment.orphaned;
-
-    let statusClass = '';
-    if (isResolved) statusClass = 'resolved';
-    else if (isOrphaned) statusClass = 'orphaned';
+    const statusClass = this.getStatusClass(rootComment);
 
     return html`
       <li class="da-thread-preview ${statusClass}"
@@ -711,8 +676,8 @@ export default class DaComments extends LitElement {
               ${formatTimestamp(rootComment.createdAt)}${wasEdited(rootComment) ? html`<span class="da-edited-indicator" title="Edited ${formatFullTimestamp(rootComment.updatedAt)}"> · Edited</span>` : nothing}
             </span>
           </div>
-          ${isResolved ? html`<span class="da-resolved-tag">Resolved</span>` : nothing}
-          ${isOrphaned ? html`<span class="da-orphaned-tag">Detached</span>` : nothing}
+          ${rootComment.resolved ? html`<span class="da-resolved-tag">Resolved</span>` : nothing}
+          ${rootComment.orphaned ? html`<span class="da-orphaned-tag">Detached</span>` : nothing}
         </div>
         <p class="da-thread-preview-content">${rootComment.content}</p>
         ${replyCount > 0 ? html`
@@ -723,7 +688,7 @@ export default class DaComments extends LitElement {
   }
 
   renderComment(comment, isRoot = false, isResolved = false) {
-    const isEditing = this._editingCommentId === comment.id;
+    const isEditing = this._editing?.id === comment.id;
 
     if (isEditing) {
       return html`
@@ -739,7 +704,7 @@ export default class DaComments extends LitElement {
           </div>
           <form @submit=${this.saveEdit} class="da-comment-form da-edit-form">
             <textarea
-              .value=${this._editText}
+              .value=${this._editing?.text || ''}
               @input=${this.handleEditInput}
               @keydown=${(e) => {
                 if (e.key === 'Escape') this.cancelEdit();
@@ -754,7 +719,7 @@ export default class DaComments extends LitElement {
               <button
                 type="submit"
                 class="da-btn-submit"
-                ?disabled=${!this._editText.trim()}
+                ?disabled=${!this._editing?.text?.trim()}
               >Save</button>
             </div>
           </form>
@@ -798,7 +763,7 @@ export default class DaComments extends LitElement {
 
   renderReactions(comment, isResolved = false) {
     const reactions = getReactionsList(comment);
-    const showPicker = this._reactionPickerCommentId === comment.id;
+    const showPicker = this._popover?.type === 'reactions' && this._popover.targetId === comment.id;
     const canReact = !isResolved && this.currentUser && !this.isAnonymousUser();
 
     return html`
@@ -849,7 +814,7 @@ export default class DaComments extends LitElement {
   renderCommentMenu(comment, isRoot, canEdit) {
     if (!canEdit && !isRoot) return nothing;
 
-    const isOpen = this._menuOpen === comment.id;
+    const isOpen = this._popover?.type === 'menu' && this._popover.targetId === comment.id;
 
     return html`
       <div class="da-comment-menu">
@@ -898,16 +863,14 @@ export default class DaComments extends LitElement {
         <textarea
           placeholder="Reply..."
           rows="1"
-          .value=${isReplying ? this._commentText : ''}
+          .value=${isReplying ? (this._formState?.text || '') : ''}
           @input=${this.handleTextareaInput}
           @focus=${() => {
-            this._replyingTo = rootComment.id;
-            this._commentText = '';
+            this._formState = { mode: 'reply', selection: null, text: '', replyTo: rootComment.id };
           }}
           @keydown=${(e) => {
             if (e.key === 'Escape') {
-              this._replyingTo = null;
-              this._commentText = '';
+              this._formState = null;
             }
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
@@ -918,13 +881,12 @@ export default class DaComments extends LitElement {
         ${isReplying ? html`
           <div class="da-comment-form-actions">
             <button type="button" class="da-btn-cancel" @click=${() => {
-              this._replyingTo = null;
-              this._commentText = '';
+              this._formState = null;
             }}>Cancel</button>
             <button
               type="submit"
               class="da-btn-submit"
-              ?disabled=${!this._commentText.trim()}
+              ?disabled=${!this._formState?.text?.trim()}
             >Reply</button>
           </div>
         ` : nothing}
@@ -951,7 +913,7 @@ export default class DaComments extends LitElement {
               placeholder="Add a comment..."
               rows="3"
               autofocus
-              .value=${this._commentText}
+              .value=${this._formState?.text || ''}
               @input=${this.handleTextareaInput}
               @keydown=${(e) => {
                 if (e.key === 'Escape') this.cancelNewComment();
@@ -966,7 +928,7 @@ export default class DaComments extends LitElement {
               <button
                 type="submit"
                 class="da-btn-submit"
-                ?disabled=${!this._commentText.trim()}
+                ?disabled=${!this._formState?.text?.trim()}
               >Comment</button>
             </div>
           </form>
@@ -983,11 +945,8 @@ export default class DaComments extends LitElement {
     const replies = comments.filter((c) => c.parentId !== null);
     const isResolved = rootComment.resolved;
     const isOrphaned = rootComment.orphaned;
-    const isReplying = this._replyingTo === rootComment.id;
-
-    let cardClass = '';
-    if (isResolved) cardClass = 'resolved';
-    else if (isOrphaned) cardClass = 'orphaned';
+    const isReplying = this._formState?.mode === 'reply' && this._formState?.replyTo === rootComment.id;
+    const cardClass = this.getStatusClass(rootComment);
 
     return html`
       <div class="da-thread-detail">
@@ -1022,24 +981,13 @@ export default class DaComments extends LitElement {
   }
 
   renderList() {
-    const sortedThreads = this.getThreadsSorted();
-    const activeThreads = sortedThreads.filter(([, comments]) => {
-      const root = getRootComment(comments);
-      return !root.resolved && !root.orphaned;
-    });
-    const orphanedThreads = sortedThreads.filter(([, comments]) => {
-      const root = getRootComment(comments);
-      return root.orphaned && !root.resolved;
-    });
-    const resolvedThreads = sortedThreads.filter(
-      ([, comments]) => getRootComment(comments).resolved,
-    );
+    const { active, orphaned, resolved } = this.categorizeThreads();
 
-    const canAddComment = this._hasValidSelection && !this.isAnonymousUser();
+    const canAdd = this.canAddComment && !this.isAnonymousUser();
     let buttonTitle = 'Select text to comment';
     if (this.isAnonymousUser()) {
       buttonTitle = 'Sign in to add comments';
-    } else if (this._hasValidSelection) {
+    } else if (this.canAddComment) {
       buttonTitle = 'Add comment';
     }
 
@@ -1048,42 +996,42 @@ export default class DaComments extends LitElement {
         <button
           class="da-add-comment-btn"
           @click=${this.startAddComment}
-          ?disabled=${!canAddComment}
+          ?disabled=${!canAdd}
           title=${buttonTitle}
         >
           <span class="da-icon da-icon-add"></span>
           Add comment
         </button>
 
-        ${activeThreads.length > 0 ? html`
+        ${active.length > 0 ? html`
           <ul class="da-threads-list">
-            ${activeThreads.map(([threadId, comments]) => this.renderThreadPreview(threadId, comments))}
+            ${active.map(([threadId, comments]) => this.renderThreadPreview(threadId, comments))}
           </ul>
         ` : html`
           <p class="da-no-comments">No comments yet</p>
         `}
 
-        ${orphanedThreads.length > 0 ? html`
+        ${orphaned.length > 0 ? html`
           <div class="da-orphaned-section">
-            <button class="da-toggle-orphaned" @click=${() => { this._showOrphaned = !this._showOrphaned; }}>
-              ${this._showOrphaned ? 'Hide' : 'Show'} detached (${orphanedThreads.length})
+            <button class="da-toggle-orphaned" @click=${() => { this._viewFilters = { ...this._viewFilters, orphaned: !this._viewFilters.orphaned }; }}>
+              ${this._viewFilters.orphaned ? 'Hide' : 'Show'} detached (${orphaned.length})
             </button>
-            ${this._showOrphaned ? html`
+            ${this._viewFilters.orphaned ? html`
               <ul class="da-threads-list">
-                ${orphanedThreads.map(([threadId, comments]) => this.renderThreadPreview(threadId, comments))}
+                ${orphaned.map(([threadId, comments]) => this.renderThreadPreview(threadId, comments))}
               </ul>
             ` : nothing}
           </div>
         ` : nothing}
 
-        ${resolvedThreads.length > 0 ? html`
+        ${resolved.length > 0 ? html`
           <div class="da-resolved-section">
-            <button class="da-toggle-resolved" @click=${() => { this._showResolved = !this._showResolved; }}>
-              ${this._showResolved ? 'Hide' : 'Show'} resolved (${resolvedThreads.length})
+            <button class="da-toggle-resolved" @click=${() => { this._viewFilters = { ...this._viewFilters, resolved: !this._viewFilters.resolved }; }}>
+              ${this._viewFilters.resolved ? 'Hide' : 'Show'} resolved (${resolved.length})
             </button>
-            ${this._showResolved ? html`
+            ${this._viewFilters.resolved ? html`
               <ul class="da-threads-list">
-                ${resolvedThreads.map(([threadId, comments]) => this.renderThreadPreview(threadId, comments))}
+                ${resolved.map(([threadId, comments]) => this.renderThreadPreview(threadId, comments))}
               </ul>
             ` : nothing}
           </div>
@@ -1093,7 +1041,7 @@ export default class DaComments extends LitElement {
   }
 
   renderContent() {
-    if (this._isCreatingNew) {
+    if (this._formState?.mode === 'new') {
       return this.renderNewCommentForm();
     }
     if (this._activeThreadId) {
@@ -1103,7 +1051,7 @@ export default class DaComments extends LitElement {
   }
 
   renderConfirmDeleteDialog() {
-    if (!this._confirmDeleteThread) return nothing;
+    if (this._popover?.type !== 'delete') return nothing;
 
     const action = {
       style: 'negative',

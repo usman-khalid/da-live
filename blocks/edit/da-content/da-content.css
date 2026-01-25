@@ -119,7 +119,6 @@ da-comments {
   box-sizing: border-box;
 }
 
-
 .da-preview-menuitem.show-preview:hover {
   background-color: var(--editor-btn-bg-color-hover) !important;
 }

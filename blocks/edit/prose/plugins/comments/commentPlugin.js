@@ -21,7 +21,6 @@ import {
 } from 'da-y-wrapper';
 import { groupCommentsByThread, findBestMatchPosition, getPositionContext } from '../../../da-comments/helpers/comment-utils.js';
 
-const ADD_WIDGET_DELAY_MS = 300;
 const SYNC_STABILITY_DELAY_MS = 500;
 
 const commentPluginKey = new PluginKey('comments');
@@ -31,8 +30,6 @@ const pluginState = {
   activeThreadId: null,
   pendingCommentRange: null,
   initialSyncComplete: false,
-  addWidgetTimeout: null,
-  showAddWidget: false,
   syncStabilityTimeout: null,
   lastDocChangeTime: 0,
 };
@@ -222,8 +219,7 @@ export function setActiveThread(threadId) {
   }
 
   if (previousThreadId !== threadId) {
-    const detail = { threadId, previousThreadId };
-    window.dispatchEvent(new CustomEvent('da-comment-active-changed', { detail }));
+    window.dispatchEvent(new CustomEvent('da-comment-focus', { detail: { threadId } }));
   }
 }
 
@@ -244,13 +240,6 @@ export function setPendingCommentRange(range) {
  * Clear the pending comment range and collapse the selection
  */
 export function clearPendingCommentRange() {
-  pluginState.showAddWidget = false;
-
-  if (pluginState.addWidgetTimeout) {
-    clearTimeout(pluginState.addWidgetTimeout);
-    pluginState.addWidgetTimeout = null;
-  }
-
   setPendingCommentRange(null);
   window.view?.focus?.();
 }
@@ -657,30 +646,7 @@ export function hasValidCommentSelection(state) {
 }
 
 /**
- * Create the inline "+" button widget for adding comments.
- * @returns {HTMLElement}
- */
-function createAddCommentWidget() {
-  const button = document.createElement('button');
-  button.className = 'da-add-comment-widget';
-  button.setAttribute('title', 'Add comment');
-  button.setAttribute('type', 'button');
-  button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 20 20">
-    <path fill="currentColor" d="M17 2H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3l4 3 4-3h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 12h-3.59L10 17l-3.41-3H3V4h14v10z"/>
-  </svg>`;
-  button.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    window.dispatchEvent(new CustomEvent('da-comment-add'));
-  });
-  return button;
-}
-
-/**
  * Build decorations for comment highlights.
- * - Text comments: base highlight comes from marks, decorations add active state
- * - Image comments: ALL highlighting via decorations (more reliable than toDOM)
- * - Add comment widget: shows "+" button at selection end
  *
  * @param {object} state - ProseMirror state
  * @returns {DecorationSet}
@@ -731,34 +697,11 @@ function buildDecorations(state) {
     }
   }
 
-  const isCellSel = state.selection instanceof CellSelection;
-  const { pendingCommentRange, activeThreadId, showAddWidget } = pluginState;
-  const showWidget = !pendingCommentRange && !activeThreadId && showAddWidget && !isCellSel;
-  if (showWidget && hasValidCommentSelection(state)) {
-    const { from, to } = state.selection;
-    const commentMark = state.schema.marks.comment;
-    let hasExistingComment = false;
-
-    if (commentMark) {
-      state.doc.nodesBetween(from, to, (node) => {
-        if (node.marks?.some((m) => m.type === commentMark)) {
-          hasExistingComment = true;
-          return false;
-        }
-        return true;
-      });
-    }
-
-    if (!hasExistingComment) {
-      decorations.push(Decoration.widget(to, createAddCommentWidget, { side: 1 }));
-    }
-  }
-
   return DecorationSet.create(state.doc, decorations);
 }
 
 /**
- * Open the comment panel and start adding a comment.
+ * Open the comment panel and start adding a comment (keyboard shortcut handler).
  *
  * @returns {boolean} True if handled
  */
@@ -771,9 +714,7 @@ export function openCommentPanel() {
     return false;
   }
 
-  // Dispatch event to open comment panel
   window.dispatchEvent(new CustomEvent('da-comment-add'));
-
   return true;
 }
 
@@ -790,8 +731,7 @@ function handleClick(view, pos, event) {
   const clickedElement = event?.target;
   if (clickedElement?.tagName === 'IMG' && clickedElement.dataset.commentThread) {
     const threadId = clickedElement.dataset.commentThread;
-    setActiveThread(threadId);
-    window.dispatchEvent(new CustomEvent('da-comment-clicked', { detail: { threadId } }));
+    setActiveThread(threadId); // This dispatches da-comment-focus
     return true;
   }
 
@@ -799,8 +739,7 @@ function handleClick(view, pos, event) {
   const wrapper = clickedElement?.closest('.focal-point-image-wrapper[data-comment-thread]');
   if (wrapper) {
     const threadId = wrapper.dataset.commentThread;
-    setActiveThread(threadId);
-    window.dispatchEvent(new CustomEvent('da-comment-clicked', { detail: { threadId } }));
+    setActiveThread(threadId); // This dispatches da-comment-focus
     return true;
   }
 
@@ -819,11 +758,7 @@ function handleClick(view, pos, event) {
     const mark = node.marks.find((m) => m.type === commentMark);
     if (mark) {
       const { threadId } = mark.attrs;
-      setActiveThread(threadId);
-
-      const detail = { threadId };
-      window.dispatchEvent(new CustomEvent('da-comment-clicked', { detail }));
-
+      setActiveThread(threadId); // This dispatches da-comment-focus
       return true;
     }
   }
@@ -834,11 +769,7 @@ function handleClick(view, pos, event) {
 
   if (imageNode?.attrs.commentThreadId) {
     const { commentThreadId } = imageNode.attrs;
-    setActiveThread(commentThreadId);
-
-    const detail = { threadId: commentThreadId };
-    window.dispatchEvent(new CustomEvent('da-comment-clicked', { detail }));
-
+    setActiveThread(commentThreadId); // This dispatches da-comment-focus
     return true;
   }
 
@@ -955,12 +886,9 @@ function maintainCommentMarks(tr, oldState, newState) {
 
 /**
  * Dispatch selection change event for UI components to react to.
- * @param {object} state - ProseMirror state
  */
-function dispatchSelectionChange(state) {
-  const { from, to } = state.selection;
-  const hasSelection = from !== to || isImageSelection(state);
-  window.dispatchEvent(new CustomEvent('da-selection-change', { detail: { hasSelection } }));
+function dispatchSelectionChange() {
+  window.dispatchEvent(new CustomEvent('da-selection-change'));
 }
 
 /**
@@ -1032,30 +960,10 @@ export function createCommentPlugin() {
 
           if (selectionKey !== prevSelectionKey && selectionKey !== lastSelectionKey) {
             lastSelectionKey = selectionKey;
-            dispatchSelectionChange(view.state);
-
-            if (pluginState.addWidgetTimeout) {
-              clearTimeout(pluginState.addWidgetTimeout);
-              pluginState.addWidgetTimeout = null;
-            }
-            pluginState.showAddWidget = false;
-
-            const hasSelection = from !== to;
-            if (hasSelection && hasValidCommentSelection(view.state)) {
-              pluginState.addWidgetTimeout = setTimeout(() => {
-                pluginState.showAddWidget = true;
-                pluginState.addWidgetTimeout = null;
-                const { tr } = view.state;
-                view.dispatch(tr.setMeta(commentPluginKey, { showWidget: true }));
-              }, ADD_WIDGET_DELAY_MS);
-            }
+            dispatchSelectionChange();
           }
         },
         destroy() {
-          if (pluginState.addWidgetTimeout) {
-            clearTimeout(pluginState.addWidgetTimeout);
-            pluginState.addWidgetTimeout = null;
-          }
           if (pluginState.syncStabilityTimeout) {
             clearTimeout(pluginState.syncStabilityTimeout);
             pluginState.syncStabilityTimeout = null;
