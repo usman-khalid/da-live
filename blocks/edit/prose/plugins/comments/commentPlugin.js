@@ -113,7 +113,7 @@ function recoverMissingMarks() {
     }
 
     const rootComment = comments.find((c) => c.parentId === null);
-    if (!rootComment || rootComment.resolved) {
+    if (!rootComment || rootComment.resolved || rootComment.orphaned) {
       // eslint-disable-next-line no-continue
       continue;
     }
@@ -160,7 +160,6 @@ function resetSyncStabilityTimer() {
 
 /**
  * Start waiting for document stability after initial sync.
- * Uses awareness of document changes rather than a fixed delay.
  */
 function waitForDocumentStability() {
   if (pluginState.syncStabilityTimeout) {
@@ -183,7 +182,6 @@ function waitForDocumentStability() {
 
 /**
  * Set the WebSocket provider for sync status tracking.
- * Uses document stability detection rather than a fixed delay.
  * @param {WebsocketProvider} provider - The Yjs WebSocket provider
  */
 export function setWsProvider(provider) {
@@ -224,7 +222,7 @@ export function setActiveThread(threadId) {
 }
 
 /**
- * Set a pending comment range (shows temporary highlight while adding a comment)
+ * Set a pending comment range (temporary purple highlight while adding a comment)
  * @param {object|null} range - { from, to } or null to clear
  */
 export function setPendingCommentRange(range) {

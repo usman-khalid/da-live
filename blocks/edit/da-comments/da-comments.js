@@ -178,7 +178,7 @@ export default class DaComments extends LitElement {
   }
 
   /**
-   * Handle selection change events from ProseMirror plugin
+   * Handle selection change events from plugin
    */
   handleSelectionChange() {
     // Cancel new comment creation if selection is lost
@@ -210,10 +210,6 @@ export default class DaComments extends LitElement {
     this.dispatchEvent(event);
   }
 
-  /**
-   * Unified handler for comment focus events from ProseMirror plugin.
-   * Handles both clicking on highlights and active thread changes.
-   */
   handleCommentFocus(event) {
     const { threadId } = event.detail;
     if (this._activeThreadId === threadId) return;
@@ -249,7 +245,6 @@ export default class DaComments extends LitElement {
       this.focusCommentTextarea();
     }
 
-    // Auto-start comment creation when panel opens with a valid selection
     if (changedProps.has('open') && this.open && !changedProps.get('open')) {
       if (this.canAddComment && !this._formState && !this._activeThreadId) {
         queueMicrotask(() => this.startAddComment());
@@ -266,7 +261,7 @@ export default class DaComments extends LitElement {
   }
 
   /**
-   * Open a specific comment thread directly (from URL parameter)
+   * Open a comment thread directly from URL param
    */
   openInitialComment(commentId) {
     this._activeThreadId = commentId;
