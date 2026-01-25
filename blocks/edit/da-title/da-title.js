@@ -37,6 +37,8 @@ export default class DaTitle extends LitElement {
     collabUsers: { attribute: false },
     previewPrefix: { attribute: false },
     livePrefix: { attribute: false },
+    hasChanges: { attribute: false },
+    _savingDisabled: { state: true },
     _actionsVis: { state: true },
     _status: { state: true },
     _fixedActions: { state: true },
@@ -46,8 +48,14 @@ export default class DaTitle extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.shadowRoot.adoptedStyleSheets = [sheet];
-    this._actionsVis = [];
+    this._actionsVis = this.getInitialActions();
+    this.hasChanges = false;
+    this._savingDisabled = false;
+    this._isStaleIgnored = false;
+    this._pollSession = 0;
     inlinesvg({ parent: this.shadowRoot, paths: ICONS });
+    this.syncConfigPolling();
+
     if (this.details.view === 'sheet') {
       this.collabStatus = window.navigator.onLine
         ? 'connected'
@@ -55,6 +63,21 @@ export default class DaTitle extends LitElement {
 
       window.addEventListener('online', () => { this.collabStatus = 'connected'; });
       window.addEventListener('offline', () => { this.collabStatus = 'offline'; });
+    }
+  }
+
+  disconnectedCallback() {
+    this.clearConfigPolling();
+    super.disconnectedCallback();
+  }
+
+  updated(changedProperties) {
+    super.updated(changedProperties);
+    if (changedProperties.has('details')) {
+      this._actionsVis = this.getInitialActions();
+      this._savingDisabled = false;
+      this._isStaleIgnored = false;
+      this.syncConfigPolling();
     }
   }
 
@@ -68,6 +91,7 @@ export default class DaTitle extends LitElement {
   }
 
   handleError(json, action, icon) {
+    // eslint-disable-next-line no-console
     console.log('handleError', json, action, icon);
     this._status = { ...json.error, action };
     icon.classList.remove('is-sending');
@@ -93,24 +117,47 @@ export default class DaTitle extends LitElement {
   async handleAction(action) {
     this.toggleActions();
     this._status = null;
-    const sendBtn = this.shadowRoot.querySelector('.da-title-action-send-icon');
-    sendBtn.classList.add('is-sending');
+
+    const sendBtn = this.shadowRoot.querySelector(
+      this._isSaveOnlyView ? '.da-title-action' : '.da-title-action-send-icon',
+    );
+
+    if (sendBtn) {
+      sendBtn.classList.add('is-sending');
+    }
 
     const { hash } = window.location;
     const pathname = hash.replace('#', '');
 
-    // Only save to DA if it is a sheet or config
-    if (this.details.view === 'sheet') {
+    if (this.details.view === 'sheet' && action === 'save') {
       const dasSave = await saveToDa(pathname, this.sheet);
+      if (sendBtn) sendBtn.classList.remove('is-sending');
       if (!dasSave.ok) return;
+      this.hasChanges = false;
+      return;
     }
-    if (this.details.view === 'config') {
+
+    if (this._isConfigView) {
+      if (this._savingDisabled) {
+        if (sendBtn) {
+          sendBtn.classList.remove('is-sending');
+        }
+        return;
+      }
       const daConfigResp = await saveDaConfig(pathname, this.sheet);
+
+      if (sendBtn) {
+        sendBtn.classList.remove('is-sending');
+      }
+
       if (!daConfigResp.ok) {
         // eslint-disable-next-line no-console
         console.log('Saving configuration failed because:', daConfigResp.status, await daConfigResp.text());
-        return;
+      } else {
+        this.hasChanges = false;
+        await this.cacheConfigData();
       }
+      return;
     }
     if (action === 'preview' || action === 'publish') {
       const cdn = await getCdnConfig(pathname);
@@ -141,7 +188,7 @@ export default class DaTitle extends LitElement {
       window.open(`${toOpenInAem}?nocache=${Date.now()}`, toOpenInAem);
     }
     if (this.details.view === 'edit' && action === 'publish') saveDaVersion(pathname);
-    sendBtn.classList.remove('is-sending');
+    if (sendBtn) sendBtn.classList.remove('is-sending');
   }
 
   async handleRoleRequest() {
@@ -189,15 +236,13 @@ export default class DaTitle extends LitElement {
   }
 
   async toggleActions() {
-    // toggle off if already on
-    if (this._actionsVis.length > 0) {
-      this._actionsVis = [];
+    if (this._isSaveOnlyView || this.isDotDADoc) {
       return;
     }
 
-    // toggle on for config
-    if (this.details.view === 'config') {
-      this._actionsVis = ['save'];
+    // toggle off if already on
+    if (this._actionsVis.length > 0) {
+      this._actionsVis = [];
       return;
     }
 
@@ -217,12 +262,122 @@ export default class DaTitle extends LitElement {
     return !this.permissions.some((permission) => permission === 'write');
   }
 
+  get _isConfigView() {
+    return this.details.view === 'config';
+  }
+
+  get _isSaveOnlyView() {
+    return this._isConfigView || this.details.view === 'sheet';
+  }
+
+  get isDotDADoc() {
+    return this.details.view === 'edit' && this.details.fullpath.includes('/.da/');
+  }
+
+  getInitialActions() {
+    if (this.isDotDADoc) {
+      return [];
+    }
+    if (this._isSaveOnlyView) {
+      return ['save'];
+    }
+    return [];
+  }
+
+  clearConfigPolling() {
+    if (this._pollInterval) {
+      clearInterval(this._pollInterval);
+      this._pollInterval = null;
+    }
+  }
+
+  syncConfigPolling() {
+    this._pollSession = (this._pollSession || 0) + 1;
+    this.clearConfigPolling();
+    if (!this._isConfigView || this._isStaleIgnored) {
+      this._cachedConfigData = null;
+      return;
+    }
+    this.startConfigPolling(this._pollSession);
+  }
+
+  async cacheConfigData() {
+    const resp = await daFetch(this.details.sourceUrl);
+    if (!resp.ok) return;
+    this._cachedConfigData = JSON.stringify(await resp.json());
+  }
+
+  async startConfigPolling(pollSession) {
+    await this.cacheConfigData();
+    if (pollSession !== this._pollSession || this._isStaleIgnored) return;
+    this.clearConfigPolling();
+    this._pollInterval = setInterval(() => this.checkConfigChanges(), 30000);
+  }
+
+  async checkConfigChanges() {
+    if (this._isStaleIgnored) return;
+    const resp = await daFetch(this.details.sourceUrl);
+    if (!resp.ok) return;
+    const latestConfigData = JSON.stringify(await resp.json());
+    if (!this._cachedConfigData) {
+      this._cachedConfigData = latestConfigData;
+      return;
+    }
+    if (latestConfigData !== this._cachedConfigData) {
+      this.clearConfigPolling();
+      this.showConfigStaleDialog();
+    }
+  }
+
+  async showConfigStaleDialog() {
+    await import('../../shared/da-dialog/da-dialog.js');
+    this._dialog = {
+      title: 'Config Updated',
+      content: html`
+        <p>The config has been updated. Please refresh to get the latest changes, or ignore to keep your existing edits.</p>
+      `,
+      action: {
+        style: 'accent',
+        label: 'Refresh',
+        click: async () => this.handleConfigRefresh(),
+      },
+      ignoreAction: {
+        style: 'primary outline',
+        label: 'Ignore',
+        click: () => this.handleConfigIgnore(),
+      },
+      close: () => this.handleConfigIgnore(),
+    };
+  }
+
+  handleConfigIgnore() {
+    this._dialog = undefined;
+    this._savingDisabled = true;
+    this._isStaleIgnored = true;
+    this.clearConfigPolling();
+  }
+
+  async handleConfigRefresh() {
+    this._dialog = undefined;
+    this._savingDisabled = false;
+    this._isStaleIgnored = false;
+    this.hasChanges = false;
+    const daSheet = document.querySelector('.da-sheet');
+    if (!daSheet) return;
+    const { default: initSheet, getData } = await import('../../sheet/utils/index.js');
+    const freshData = await getData(this.details.sourceUrl);
+    this.sheet = await initSheet(daSheet, freshData);
+    this.syncConfigPolling();
+  }
+
   renderActions() {
+    const saveDisabled = this._isSaveOnlyView && (!this.hasChanges || this._savingDisabled);
     return html`${this._actionsVis.map((action) => html`
       <button
         @click=${() => this.handleAction(action)}
-        class="con-button blue da-title-action"
-        aria-label="Send">
+        class="con-button da-title-action ${saveDisabled ? '' : 'blue'}"
+        aria-label="${action}"
+        ?disabled=${saveDisabled}>
         ${action.charAt(0).toUpperCase() + action.slice(1)}
       </button>
     `)}`;
@@ -248,6 +403,21 @@ export default class DaTitle extends LitElement {
         .action=${this._dialog.action}
         @close=${this._dialog.close}>
         ${this._dialog.content}
+        ${this._dialog.ignoreAction ? html`
+          <sl-button
+            slot="footer-right"
+            class=${this._dialog.ignoreAction.style}
+            @click=${this._dialog.ignoreAction.click}>
+            ${this._dialog.ignoreAction.label}
+          </sl-button>
+          <sl-button
+            slot="footer-right"
+            class=${this._dialog.action.style}
+            @click=${this._dialog.action.click}
+            ?disabled=${this._dialog.action.disabled}>
+            ${this._dialog.action.label}
+          </sl-button>
+        ` : nothing}
       </da-dialog>
     `;
   }
@@ -290,17 +460,24 @@ export default class DaTitle extends LitElement {
         <div class="da-title-collab-actions-wrapper">
           ${this.collabStatus ? this.renderCollab() : nothing}
           ${this._status ? this.renderError() : nothing}
-          <div class="da-title-actions ${this._fixedActions ? 'is-fixed' : ''} ${this._actionsVis.length > 0 ? 'is-open' : ''}">
-            ${this.renderActions()}
-            <button
-              @click=${this.toggleActions}
-              class="con-button blue da-title-action-send"
-              aria-label="Send">
-              <span class="da-title-action-send-icon"></span>
-            </button>
-          </div>
+          ${this.isDotDADoc ? nothing : html`
+            <div class="da-title-actions ${this._fixedActions ? 'is-fixed' : ''} ${!this._isSaveOnlyView && this._actionsVis.length > 0 ? 'is-open' : ''} ${this._isSaveOnlyView ? 'save-only' : ''}">
+              ${this.renderActions()}
+              ${this._isSaveOnlyView ? nothing : html`
+                <button
+                  @click=${this.toggleActions}
+                  class="con-button blue da-title-action-send"
+                  aria-label="Send">
+                  <span class="da-title-action-send-icon"></span>
+                </button>
+              `}
+            </div>
+          `}
         </div>
       </div>
+      ${this._isConfigView && this._savingDisabled
+    ? html`<p class="da-title-save-disabled-msg">Saving is disabled until the config has been refreshed. If you have unsaved changes that you want to preserve, you can copy them and merge them after refreshing the config.</p>`
+    : nothing}
       ${this._dialog ? this.renderDialog() : nothing}
     `;
   }
