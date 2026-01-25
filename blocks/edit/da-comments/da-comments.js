@@ -185,6 +185,7 @@ export default class DaComments extends LitElement {
     if (!this.canAddComment && this._formState?.mode === 'new') {
       this.cancelNewComment();
     }
+    this.requestUpdate();
   }
 
   scrollToCommentHighlight(threadId) {
