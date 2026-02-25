@@ -983,12 +983,12 @@ da-diff-deleted, da-diff-added {
   color: #0265dc;
 }
 
-.table-drag-handle {
+.table-select-handle {
   position: absolute;
   width: 20px;
   height: 20px;
   background-color: #fff;
-  background-image: url('/blocks/edit/img/drag-handle.svg');
+  background-image: url('/blocks/edit/img/select-handle.svg');
   background-repeat: no-repeat;
   background-position: center;
   border: 1px solid #ccc;
@@ -1000,11 +1000,11 @@ da-diff-deleted, da-diff-added {
   justify-content: center;
 }
 
-.table-drag-handle.is-visible {
+.table-select-handle.is-visible {
   display: flex;
 }
 
-.table-drag-handle:hover {
+.table-select-handle:hover {
   background-color: #f0f7ff;
   border-color: var(--s2-blue-800);
 }

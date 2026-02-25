@@ -1,17 +1,17 @@
 import { expect } from '@esm-bundle/chai';
 import sinon from 'sinon';
 
-describe('tableDragHandle Plugin', () => {
-  let tableDragHandle;
+describe('tableSelectHandle Plugin', () => {
+  let tableSelectHandle;
   let plugin;
 
   before(async () => {
-    const mod = await import('../../../../../../blocks/edit/prose/plugins/tableDragHandle.js');
-    tableDragHandle = mod.default;
+    const mod = await import('../../../../../../blocks/edit/prose/plugins/tableSelectHandle.js');
+    tableSelectHandle = mod.default;
   });
 
   beforeEach(() => {
-    plugin = tableDragHandle();
+    plugin = tableSelectHandle();
   });
 
   describe('View initialization', () => {
@@ -50,7 +50,7 @@ describe('tableDragHandle Plugin', () => {
     it('creates and appends handle element', () => {
       const viewReturn = plugin.spec.view(mockEditorView);
 
-      const handle = container.querySelector('.table-drag-handle');
+      const handle = container.querySelector('.table-select-handle');
       expect(handle).to.exist;
       expect(handle.classList.contains('is-visible')).to.be.false;
 
@@ -60,12 +60,12 @@ describe('tableDragHandle Plugin', () => {
     it('removes handle on destroy', () => {
       const viewReturn = plugin.spec.view(mockEditorView);
 
-      let handle = container.querySelector('.table-drag-handle');
+      let handle = container.querySelector('.table-select-handle');
       expect(handle).to.exist;
 
       viewReturn.destroy();
 
-      handle = container.querySelector('.table-drag-handle');
+      handle = container.querySelector('.table-select-handle');
       expect(handle).to.be.null;
     });
   });
@@ -120,7 +120,7 @@ describe('tableDragHandle Plugin', () => {
       Object.defineProperty(event, 'target', { value: tableWrapper });
       editorDom.dispatchEvent(event);
 
-      const handle = container.querySelector('.table-drag-handle');
+      const handle = container.querySelector('.table-select-handle');
       expect(handle.classList.contains('is-visible')).to.be.true;
 
       viewReturn.destroy();

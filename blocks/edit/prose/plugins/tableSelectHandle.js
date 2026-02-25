@@ -22,7 +22,7 @@ function getTablePos(view, tableEl) {
 /**
  * Allows selecting an entire table by clicking an icon in the top left corner.
  */
-export default function tableDragHandle() {
+export default function tableSelectHandle() {
   let handle = null;
   let currentTable = null;
   let currentWrapper = null;
@@ -45,7 +45,7 @@ export default function tableDragHandle() {
 
   function createHandle(view) {
     const el = document.createElement('div');
-    el.className = 'table-drag-handle';
+    el.className = 'table-select-handle';
     el.contentEditable = 'false';
 
     el.addEventListener('mousedown', (e) => {

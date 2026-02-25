@@ -29,7 +29,7 @@ import { linkItem } from './plugins/menu/linkItem.js';
 import codemark from './plugins/codemark.js';
 import imageDrop from './plugins/imageDrop.js';
 import imageFocalPoint from './plugins/imageFocalPoint.js';
-import tableDragHandle from './plugins/tableDragHandle.js';
+import tableSelectHandle from './plugins/tableSelectHandle.js';
 import linkConverter from './plugins/linkConverter.js';
 import linkTextSync from './plugins/linkTextSync.js';
 import sectionPasteHandler from './plugins/sectionPasteHandler.js';
@@ -348,7 +348,7 @@ export default function initProse({ path, permissions }) {
     trackCursorAndChanges(),
     slashMenu(),
     linkMenu(),
-    tableDragHandle(),
+    tableSelectHandle(),
     imageDrop(schema),
     linkConverter(schema),
     linkTextSync(),
