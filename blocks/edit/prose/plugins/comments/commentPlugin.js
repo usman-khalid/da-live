@@ -25,49 +25,148 @@ const commentPluginKey = new PluginKey('comments');
 
 let positionCache = new Map();
 let reResolveTimer = null;
-let fingerprintTimer = null;
+let anchorUpdateTimer = null;
 let activeThreadId = null;
 let hoverThreadId = null;
 let pendingRange = null;
 
+function isTableCellNode(node) {
+  const role = node?.type?.spec?.tableRole;
+  return role === 'cell' || role === 'header_cell';
+}
+
+function hasSelectableTableContent(node) {
+  if (!node) return false;
+  if (node.textContent?.trim()) return true;
+
+  let hasImage = false;
+  node.descendants((child) => {
+    if (child.type?.name === 'image') {
+      hasImage = true;
+      return false;
+    }
+    return !hasImage;
+  });
+  return hasImage;
+}
+
+function buildCellDecorations(state, from, to, attrs) {
+  const decorations = [];
+  const start = Math.max(0, from - 1);
+  const end = Math.min(state.doc.content.size, to + 1);
+
+  state.doc.nodesBetween(start, end, (node, pos) => {
+    if (!isTableCellNode(node)) return true;
+
+    const cellFrom = pos + 1;
+    const cellTo = pos + node.nodeSize - 1;
+    if (from <= cellFrom && to >= cellTo) {
+      decorations.push(Decoration.inline(cellFrom, cellTo, attrs));
+      node.descendants((child, offset) => {
+        if (child.type?.name === 'image') {
+          const imagePos = cellFrom + offset;
+          decorations.push(Decoration.node(imagePos, imagePos + child.nodeSize, attrs));
+          return false;
+        }
+        return true;
+      });
+    }
+    return false;
+  });
+
+  return decorations;
+}
+
+function spansTableCells(state, from, to) {
+  return buildCellDecorations(state, from, to, {}).length > 0;
+}
+
+function isValidRange(state, from, to) {
+  return Number.isInteger(from)
+    && Number.isInteger(to)
+    && from >= 0
+    && to <= state.doc.content.size
+    && from < to;
+}
+
+function matchesBoundaryContext(state, from, to, positionContext) {
+  if (!positionContext) return false;
+
+  try {
+    const beforeLen = positionContext.textBefore?.length || 0;
+    const afterLen = positionContext.textAfter?.length || 0;
+    const beforeStart = Math.max(0, from - beforeLen);
+    const afterEnd = Math.min(state.doc.content.size, to + afterLen);
+
+    const before = beforeLen ? state.doc.textBetween(beforeStart, from, '', '') : '';
+    const after = afterLen ? state.doc.textBetween(to, afterEnd, '', '') : '';
+
+    if (positionContext.textBefore && before !== positionContext.textBefore) return false;
+    if (positionContext.textAfter && after !== positionContext.textAfter) return false;
+    return beforeLen > 0 || afterLen > 0;
+  } catch {
+    return false;
+  }
+}
+
 function findImagePosition(state, comment) {
-  let found = null;
+  const matches = [];
   state.doc.descendants((node, pos) => {
-    if (found != null) return false;
     if (node.type.name === 'image') {
       const src = node.attrs?.src || '';
       if (comment.imageRef && src.includes(comment.imageRef)) {
-        found = pos;
-        return false;
+        matches.push(pos);
       }
     }
     return true;
   });
-  return found;
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function getRootForThread(thread) {
   return thread.find((c) => c.parentId === null) || thread[0];
 }
 
-function anchorComment(state, root) {
+function resolveLiveAnchor(state, root) {
   if (root.isImage) {
+    if (isValidRange(state, root.anchorFrom, root.anchorTo)) {
+      const node = state.doc.nodeAt(root.anchorFrom);
+      if (node?.type.name === 'image') {
+        return { from: root.anchorFrom, to: root.anchorTo };
+      }
+    }
     const imgPos = findImagePosition(state, root);
     return imgPos != null ? { from: imgPos, to: imgPos + 1 } : null;
   }
-  if (!root.selectedText) return null;
-
-  if (root.anchorFrom != null && root.anchorTo != null) {
-    try {
-      const { anchorFrom, anchorTo } = root;
-      if (anchorFrom >= 0 && anchorTo <= state.doc.content.size && anchorFrom < anchorTo) {
-        const text = state.doc.textBetween(anchorFrom, anchorTo, '', '');
-        if (text === root.selectedText) return { from: anchorFrom, to: anchorTo };
-      }
-    } catch { /* stored positions out of bounds */ }
+  if (root.isTable) {
+    if (isValidRange(state, root.anchorFrom, root.anchorTo)) {
+      return { from: root.anchorFrom, to: root.anchorTo };
+    }
+    return null;
   }
 
+  if (isValidRange(state, root.anchorFrom, root.anchorTo)) {
+    const { anchorFrom, anchorTo } = root;
+    const text = state.doc.textBetween(anchorFrom, anchorTo, '', '');
+    const liveContext = root.anchorContext || root.positionContext;
+    if (
+      text === root.selectedText
+      || matchesBoundaryContext(state, anchorFrom, anchorTo, liveContext)
+    ) {
+      return { from: anchorFrom, to: anchorTo };
+    }
+  }
+
+  return null;
+}
+
+function resolveSnapshotAnchor(state, root) {
+  if (root.isImage || root.isTable || !root.selectedText) return null;
   return findBestMatchPosition(state, root.selectedText, root.positionContext);
+}
+
+function anchorComment(state, root) {
+  return resolveLiveAnchor(state, root) || resolveSnapshotAnchor(state, root);
 }
 
 function mapPositionCache(cache, mapping) {
@@ -108,41 +207,49 @@ function buildDecorations(state, cache) {
       } catch { /* nada */ }
     }
 
-    decorations.push(
-      Decoration.inline(range.from, range.to, {
-        class: cls,
-        'data-comment-thread': threadId,
-      }),
-    );
+    const attrs = {
+      class: cls,
+      'data-comment-thread': threadId,
+    };
+    if (spansTableCells(state, range.from, range.to)) {
+      decorations.push(...buildCellDecorations(state, range.from, range.to, attrs));
+      return;
+    }
+
+    decorations.push(Decoration.inline(range.from, range.to, attrs));
   });
 
   if (pendingRange && pendingRange.from < pendingRange.to) {
     const attrs = { class: 'da-comment-highlight-pending' };
-    decorations.push(Decoration.inline(pendingRange.from, pendingRange.to, attrs));
+    if (spansTableCells(state, pendingRange.from, pendingRange.to)) {
+      decorations.push(...buildCellDecorations(state, pendingRange.from, pendingRange.to, attrs));
+    } else {
+      decorations.push(Decoration.inline(pendingRange.from, pendingRange.to, attrs));
+    }
   }
 
   return DecorationSet.create(state.doc, decorations);
 }
 
-function updateCommentFingerprints(state, cache) {
+function updateCommentAnchors(state, cache) {
   if (!commentService.initialized || commentService.readOnly) return;
 
   cache.forEach((range, threadId) => {
     if (range.from >= range.to) return;
     const root = commentService.getRootComment(threadId);
-    if (!root || root.isImage) return;
+    if (!root) return;
 
-    const currentText = state.doc.textBetween(range.from, range.to, '', '');
-    if (!currentText || currentText === root.selectedText) return;
-    if (root.selectedText.includes(currentText)) return;
+    const anchorContext = getPositionContext(state, range.from, range.to);
+    const sameRange = root.anchorFrom === range.from && root.anchorTo === range.to;
+    const sameContext = JSON.stringify(root.anchorContext || null)
+      === JSON.stringify(anchorContext);
+    if (sameRange && sameContext) return;
 
-    const newContext = getPositionContext(state, range.from, range.to);
     commentService.save({
       ...root,
-      selectedText: currentText,
-      positionContext: newContext,
       anchorFrom: range.from,
       anchorTo: range.to,
+      anchorContext,
     });
   });
 }
@@ -222,14 +329,14 @@ function scheduleReResolve() {
   }, 300);
 }
 
-function scheduleFingerprintUpdate() {
-  if (fingerprintTimer) clearTimeout(fingerprintTimer);
-  fingerprintTimer = setTimeout(() => {
-    fingerprintTimer = null;
+function scheduleAnchorUpdate() {
+  if (anchorUpdateTimer) clearTimeout(anchorUpdateTimer);
+  anchorUpdateTimer = setTimeout(() => {
+    anchorUpdateTimer = null;
     const { view } = window;
     if (!view) return;
-    updateCommentFingerprints(view.state, positionCache);
-  }, 5000);
+    updateCommentAnchors(view.state, positionCache);
+  }, 150);
 }
 
 function dispatchSelectionChange() {
@@ -241,13 +348,16 @@ export function hasValidCommentSelection(state) {
   const { selection } = state;
 
   if (selection instanceof NodeSelection) {
-    return selection.node?.type.name === 'image';
+    const nodeName = selection.node?.type.name;
+    if (nodeName === 'image') return true;
+    if (nodeName === 'table') return hasSelectableTableContent(selection.node);
+    return false;
   }
 
   if (selection instanceof CellSelection) {
     let hasContent = false;
     selection.forEachCell((cell) => {
-      if (cell.textContent.trim()) hasContent = true;
+      if (hasSelectableTableContent(cell)) hasContent = true;
     });
     return hasContent;
   }
@@ -362,7 +472,7 @@ export function createCommentPlugin() {
         update(view, prevState) {
           if (view.state.doc !== prevState.doc) {
             scheduleReResolve();
-            scheduleFingerprintUpdate();
+            scheduleAnchorUpdate();
           }
 
           const { from, to } = view.state.selection;
@@ -377,7 +487,7 @@ export function createCommentPlugin() {
         },
         destroy() {
           if (reResolveTimer) clearTimeout(reResolveTimer);
-          if (fingerprintTimer) clearTimeout(fingerprintTimer);
+          if (anchorUpdateTimer) clearTimeout(anchorUpdateTimer);
         },
       };
     },

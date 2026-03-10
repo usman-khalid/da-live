@@ -11,7 +11,7 @@
  */
 
 import { LitElement, html, nothing } from 'da-lit';
-import { NodeSelection } from 'da-y-wrapper';
+import { NodeSelection, CellSelection } from 'da-y-wrapper';
 import getSheet from '../../shared/sheet.js';
 import { renderStatusToast } from '../../shared/status-toast/status-toast.js';
 import {
@@ -24,7 +24,6 @@ import {
   wasEdited,
   getInitials,
   getPositionContext,
-  findBestMatchPosition,
   REACTION_EMOJIS,
   addReaction,
   removeReaction,
@@ -43,6 +42,16 @@ import { generateColor } from '../../shared/utils.js';
 
 const sheet = await getSheet('/blocks/edit/da-comments/da-comments.css');
 const toastSheet = await getSheet('/blocks/shared/status-toast/status-toast.css');
+
+function getSelectionBounds(selection) {
+  if (!(selection instanceof CellSelection)) {
+    return { from: selection.from, to: selection.to };
+  }
+
+  const from = Math.min(...selection.ranges.map((range) => range.$from.pos));
+  const to = Math.max(...selection.ranges.map((range) => range.$to.pos));
+  return { from, to };
+}
 
 export default class DaComments extends LitElement {
   static properties = {
@@ -333,29 +342,40 @@ export default class DaComments extends LitElement {
     if (this.isAnonymousUser()) return;
 
     const { state } = window.view;
-    const { from, to } = state.selection;
-    const isImage = state.selection instanceof NodeSelection
-      && state.selection.node?.type.name === 'image';
+    const { selection } = state;
+    const { from, to } = getSelectionBounds(selection);
+    const isImage = selection instanceof NodeSelection
+      && selection.node?.type.name === 'image';
+    const isTable = selection instanceof CellSelection
+      || (selection instanceof NodeSelection && selection.node?.type.name === 'table');
 
-    if (from === to && !isImage) return;
+    if (from === to && !isImage && !isTable) return;
 
     let selectedText;
     let positionContext = null;
     let imageRef = null;
 
     if (isImage) {
-      const { node } = state.selection;
+      const { node } = selection;
       selectedText = node?.attrs?.alt || '[Image]';
       imageRef = node?.attrs?.src || null;
     } else {
       selectedText = state.doc.textBetween(from, to, '', '');
-      if (!selectedText.trim() || /^[\s\u00A0]+$/.test(selectedText)) return;
+      if (!selectedText.trim() && !isTable) return;
       positionContext = getPositionContext(state, from, to);
     }
 
     this._formState = {
       mode: 'new',
-      selection: { from, to, selectedText, isImage, positionContext, imageRef },
+      selection: {
+        from,
+        to,
+        selectedText,
+        isImage,
+        isTable,
+        positionContext,
+        imageRef,
+      },
       text: '',
       replyTo: null,
     };
@@ -372,7 +392,13 @@ export default class DaComments extends LitElement {
     if (!content || !this._formState?.selection) return;
 
     const commentId = crypto.randomUUID();
-    const { selectedText, isImage, positionContext, imageRef } = this._formState.selection;
+    const {
+      selectedText,
+      isImage,
+      isTable,
+      positionContext,
+      imageRef,
+    } = this._formState.selection;
 
     const comment = {
       id: commentId,
@@ -391,8 +417,10 @@ export default class DaComments extends LitElement {
       resolvedAt: null,
       selectedText,
       isImage: isImage || false,
+      isTable: isTable || false,
       imageRef: imageRef || null,
       positionContext: positionContext || null,
+      anchorContext: positionContext || null,
       anchorFrom: this._formState.selection.from,
       anchorTo: this._formState.selection.to,
     };
@@ -503,23 +531,8 @@ export default class DaComments extends LitElement {
     if (!rootComment) return;
 
     const unresolved = unresolveComment(rootComment);
-
-    if (window.view) {
-      const { state } = window.view;
-      const match = findBestMatchPosition(state, rootComment.selectedText, rootComment.positionContext);
-      if (match) {
-        commentService.save(unresolved);
-      } else {
-        commentService.save({
-          ...unresolved,
-          orphaned: true,
-          orphanedAt: Date.now(),
-        });
-        this.setStatus('Comment unresolved but detached', 'Original text could not be found', 'info');
-      }
-    } else {
-      commentService.save(unresolved);
-    }
+    const { orphaned, orphanedAt, ...clean } = unresolved;
+    commentService.save(clean);
   }
 
   deleteThread(threadId) {

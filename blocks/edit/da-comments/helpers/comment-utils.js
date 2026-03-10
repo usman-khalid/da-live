@@ -169,16 +169,66 @@ export function getPositionContext(state, from, to) {
   return context;
 }
 
+function getMatchSignals(doc, fullText, selectedText, match, positionContext) {
+  const signals = {
+    exactBefore: false,
+    exactAfter: false,
+    sameBlockIndex: false,
+    sameParagraphFingerprint: false,
+  };
+
+  if (!positionContext) return signals;
+
+  if (positionContext.textBefore) {
+    const sliceStart = Math.max(0, match.textIdx - positionContext.textBefore.length);
+    const before = fullText.slice(sliceStart, match.textIdx);
+    signals.exactBefore = before === positionContext.textBefore;
+  }
+
+  if (positionContext.textAfter) {
+    const afterStart = match.textIdx + selectedText.length;
+    const after = fullText.slice(afterStart, afterStart + positionContext.textAfter.length);
+    signals.exactAfter = after === positionContext.textAfter;
+  }
+
+  if (positionContext.blockIndex != null && positionContext.blockIndex >= 0) {
+    try {
+      const resolved = doc.resolve(match.from);
+      if (resolved.depth >= 1) {
+        const matchBlockIndex = resolved.index(1);
+        signals.sameBlockIndex = matchBlockIndex === positionContext.blockIndex;
+        if (signals.sameBlockIndex && positionContext.paragraphFingerprint) {
+          const blockNode = resolved.node(1);
+          signals.sameParagraphFingerprint = simpleHash(blockNode.textContent)
+            === positionContext.paragraphFingerprint;
+        }
+      }
+    } catch {
+      // Position resolution can fail on edge cases
+    }
+  }
+
+  return signals;
+}
+
+function asRange(match) {
+  return { from: match.from, to: match.to };
+}
+
+function pickUniqueMatch(matches, predicate) {
+  const filtered = matches.filter(predicate);
+  return filtered.length === 1 ? asRange(filtered[0]) : null;
+}
+
 /**
- * Find the best match position for a comment based on position context.
- * Uses a scoring algorithm when text appears multiple times.
+ * Find the best match position for a comment based on immutable position context.
+ * Returns null when the text is ambiguous rather than guessing.
  * @param {Object} state - ProseMirror editor state
- * @param {string} selectedText - The text to find
- * @param {Object} positionContext - The stored position context
- * @param {number|null} currentFrom - Current mapped position hint (for positional continuity)
- * @returns {Object|null} Position range {from, to} or null if not found
+ * @param {string} selectedText - The original quoted text
+ * @param {Object} positionContext - The original stored position context
+ * @returns {Object|null} Position range {from, to} or null if not confidently found
  */
-export function findBestMatchPosition(state, selectedText, positionContext, currentFrom = null) {
+export function findBestMatchPosition(state, selectedText, positionContext) {
   if (!selectedText || !state) return null;
 
   const { doc } = state;
@@ -210,75 +260,32 @@ export function findBestMatchPosition(state, selectedText, positionContext, curr
 
   if (matches.length === 0) return null;
   if (matches.length === 1) return { from: matches[0].from, to: matches[0].to };
-  if (!positionContext && currentFrom == null) return { from: matches[0].from, to: matches[0].to };
+  if (!positionContext) return null;
 
-  let bestMatch = matches[0];
-  let bestScore = -1;
+  const matchesWithSignals = matches.map((match) => ({
+    ...match,
+    signals: getMatchSignals(doc, fullText, selectedText, match, positionContext),
+  }));
 
-  matches.forEach((match) => {
-    let score = 0;
-
-    if (currentFrom != null) {
-      const drift = Math.abs(match.from - currentFrom);
-      if (drift === 0) score += 80;
-      else if (drift <= 5) score += 60;
-      else if (drift <= 20) score += 30;
-    }
-
-    if (positionContext) {
-      if (positionContext.textBefore) {
-        const sliceStart = Math.max(0, match.textIdx - positionContext.textBefore.length);
-        const before = fullText.slice(sliceStart, match.textIdx);
-        if (before === positionContext.textBefore) {
-          score += 50;
-        } else {
-          const tail = positionContext.textBefore.slice(-20);
-          if (tail && before.endsWith(tail)) score += 30;
-          else if (before.includes(positionContext.textBefore.slice(-10))) score += 15;
-        }
-      }
-
-      if (positionContext.textAfter) {
-        const afterStart = match.textIdx + selectedText.length;
-        const after = fullText.slice(afterStart, afterStart + positionContext.textAfter.length);
-        if (after === positionContext.textAfter) {
-          score += 50;
-        } else {
-          const head = positionContext.textAfter.slice(0, 20);
-          if (head && after.startsWith(head)) score += 30;
-          else if (after.includes(positionContext.textAfter.slice(0, 10))) score += 15;
-        }
-      }
-
-      if (positionContext.blockIndex != null && positionContext.blockIndex >= 0) {
-        try {
-          const resolved = doc.resolve(match.from);
-          if (resolved.depth >= 1) {
-            const matchBlockIndex = resolved.index(1);
-            if (matchBlockIndex === positionContext.blockIndex) {
-              score += 25;
-              if (positionContext.paragraphFingerprint) {
-                const blockNode = resolved.node(1);
-                if (simpleHash(blockNode.textContent) === positionContext.paragraphFingerprint) {
-                  score += 25;
-                }
-              }
-            } else {
-              const dist = Math.abs(matchBlockIndex - positionContext.blockIndex);
-              score -= Math.min(dist * 2, 10);
-            }
-          }
-        } catch { /* position resolution can fail */ }
-      }
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = match;
-    }
-  });
-
-  return { from: bestMatch.from, to: bestMatch.to };
+  return pickUniqueMatch(
+    matchesWithSignals,
+    (match) => match.signals.exactBefore && match.signals.exactAfter,
+  )
+    || pickUniqueMatch(
+      matchesWithSignals,
+      (match) => (match.signals.exactBefore || match.signals.exactAfter)
+        && match.signals.sameParagraphFingerprint,
+    )
+    || pickUniqueMatch(
+      matchesWithSignals,
+      (match) => (match.signals.exactBefore || match.signals.exactAfter)
+        && match.signals.sameBlockIndex,
+    )
+    || pickUniqueMatch(
+      matchesWithSignals,
+      (match) => match.signals.exactBefore || match.signals.exactAfter,
+    )
+    || null;
 }
 
 export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '🚀', '🥳', '✅'];
