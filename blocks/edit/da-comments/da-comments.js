@@ -11,26 +11,27 @@
  */
 
 import { LitElement, html, nothing } from 'da-lit';
-import { NodeSelection, CellSelection } from 'da-y-wrapper';
 import getSheet from '../../shared/sheet.js';
 import { renderStatusToast } from '../../shared/status-toast/status-toast.js';
-import {
-  getRootComment,
-  createReply,
-  resolveComment,
-  unresolveComment,
-  formatTimestamp,
-  formatFullTimestamp,
-  wasEdited,
-  getInitials,
-  getPositionContext,
-  REACTION_EMOJIS,
+import commentService, {
   addReaction,
-  removeReaction,
+  buildNewComment,
+  categorizeThreads,
+  createReply,
+  formatFullTimestamp,
+  formatOrphanPreview,
+  formatTimestamp,
+  getInitials,
+  getRootComment,
   hasUserReacted,
   getReactionsList,
-} from './helpers/comment-utils.js';
-import commentService from './helpers/comment-service.js';
+  getSelectionData,
+  REACTION_EMOJIS,
+  removeReaction,
+  resolveComment,
+  unresolveComment,
+  wasEdited,
+} from './helpers/index.js';
 import {
   hasValidCommentSelection,
   setActiveThread,
@@ -42,16 +43,7 @@ import { generateColor } from '../../shared/utils.js';
 
 const sheet = await getSheet('/blocks/edit/da-comments/da-comments.css');
 const toastSheet = await getSheet('/blocks/shared/status-toast/status-toast.css');
-
-function getSelectionBounds(selection) {
-  if (!(selection instanceof CellSelection)) {
-    return { from: selection.from, to: selection.to };
-  }
-
-  const from = Math.min(...selection.ranges.map((range) => range.$from.pos));
-  const to = Math.max(...selection.ranges.map((range) => range.$to.pos));
-  return { from, to };
-}
+export { formatOrphanPreview } from './helpers/index.js';
 
 export default class DaComments extends LitElement {
   static properties = {
@@ -341,41 +333,12 @@ export default class DaComments extends LitElement {
     if (!window.view || !this.currentUser) return;
     if (this.isAnonymousUser()) return;
 
-    const { state } = window.view;
-    const { selection } = state;
-    const { from, to } = getSelectionBounds(selection);
-    const isImage = selection instanceof NodeSelection
-      && selection.node?.type.name === 'image';
-    const isTable = selection instanceof CellSelection
-      || (selection instanceof NodeSelection && selection.node?.type.name === 'table');
-
-    if (from === to && !isImage && !isTable) return;
-
-    let selectedText;
-    let positionContext = null;
-    let imageRef = null;
-
-    if (isImage) {
-      const { node } = selection;
-      selectedText = node?.attrs?.alt || '[Image]';
-      imageRef = node?.attrs?.src || null;
-    } else {
-      selectedText = state.doc.textBetween(from, to, '', '');
-      if (!selectedText.trim() && !isTable) return;
-      positionContext = getPositionContext(state, from, to);
-    }
+    const selection = getSelectionData(window.view.state);
+    if (!selection) return;
 
     this._formState = {
       mode: 'new',
-      selection: {
-        from,
-        to,
-        selectedText,
-        isImage,
-        isTable,
-        positionContext,
-        imageRef,
-      },
+      selection,
       text: '',
       replyTo: null,
     };
@@ -389,41 +352,9 @@ export default class DaComments extends LitElement {
   submitNewComment(event) {
     event.preventDefault();
     const content = this._formState?.text?.trim();
-    if (!content || !this._formState?.selection) return;
+    if (!content || !this._formState?.selection || !this.currentUser) return;
 
-    const commentId = crypto.randomUUID();
-    const {
-      selectedText,
-      isImage,
-      isTable,
-      positionContext,
-      imageRef,
-    } = this._formState.selection;
-
-    const comment = {
-      id: commentId,
-      threadId: commentId,
-      parentId: null,
-      author: {
-        id: this.currentUser.id,
-        name: this.currentUser.name,
-        email: this.currentUser.email || '',
-      },
-      content,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      resolved: false,
-      resolvedBy: null,
-      resolvedAt: null,
-      selectedText,
-      isImage: isImage || false,
-      isTable: isTable || false,
-      imageRef: imageRef || null,
-      positionContext: positionContext || null,
-      anchorContext: positionContext || null,
-      anchorFrom: this._formState.selection.from,
-      anchorTo: this._formState.selection.to,
-    };
+    const comment = buildNewComment(this._formState.selection, this.currentUser, content);
 
     commentService.save(comment);
 
@@ -436,7 +367,7 @@ export default class DaComments extends LitElement {
     const content = this._formState?.text?.trim();
     if (!content || !this._formState?.replyTo) return;
 
-    const rootComment = commentService.getRootComment(this._activeThreadId);
+    const rootComment = getRootComment(commentService.getThread(this._activeThreadId) || []);
     if (rootComment) {
       const reply = createReply(rootComment, this.currentUser, content);
       commentService.save(reply);
@@ -463,15 +394,11 @@ export default class DaComments extends LitElement {
     event.preventDefault();
     const content = this._editing?.text?.trim();
     if (!content || !this._editing?.id) return;
-
-    const comment = commentService.getComment(this._editing.id);
-    if (comment) {
-      commentService.save({
-        ...comment,
-        content,
-        updatedAt: Date.now(),
-      });
-    }
+    commentService.updateComment(this._editing.id, (comment) => ({
+      ...comment,
+      content,
+      updatedAt: Date.now(),
+    }));
     this._editing = null;
   }
 
@@ -516,23 +443,21 @@ export default class DaComments extends LitElement {
   }
 
   resolveThread(threadId) {
-    const rootComment = commentService.getRootComment(threadId);
-    if (!rootComment) return;
-
-    const resolved = resolveComment(rootComment, this.currentUser);
-    commentService.save(resolved);
+    commentService.updateRootComment(
+      threadId,
+      (rootComment) => resolveComment(rootComment, this.currentUser),
+    );
 
     this._activeThreadId = null;
     this.resetFormState();
   }
 
   unresolveThread(threadId) {
-    const rootComment = commentService.getRootComment(threadId);
-    if (!rootComment) return;
-
-    const unresolved = unresolveComment(rootComment);
-    const { orphaned, orphanedAt, ...clean } = unresolved;
-    commentService.save(clean);
+    commentService.updateRootComment(threadId, (rootComment) => {
+      const unresolved = unresolveComment(rootComment);
+      const { orphaned, orphanedAt, ...clean } = unresolved;
+      return clean;
+    });
   }
 
   deleteThread(threadId) {
@@ -556,24 +481,7 @@ export default class DaComments extends LitElement {
   }
 
   categorizeThreads() {
-    const active = [];
-    const orphaned = [];
-    const resolved = [];
-
-    for (const [threadId, comments] of this._threads.entries()) {
-      const root = getRootComment(comments);
-      const entry = [threadId, comments, root];
-      if (root.resolved) resolved.push(entry);
-      else if (root.orphaned) orphaned.push(entry);
-      else active.push(entry);
-    }
-
-    const sortFn = (a, b) => b[2].createdAt - a[2].createdAt;
-    return {
-      active: active.sort(sortFn),
-      orphaned: orphaned.sort(sortFn),
-      resolved: resolved.sort(sortFn),
-    };
+    return categorizeThreads(this._threads);
   }
 
   getStatusClass(rootComment) {
@@ -877,6 +785,7 @@ export default class DaComments extends LitElement {
     const replies = comments.filter((c) => c.parentId !== null);
     const isResolved = rootComment.resolved;
     const isOrphaned = rootComment.orphaned;
+    const orphanPreview = formatOrphanPreview(rootComment.selectedText);
     const isReplying = this._formState?.mode === 'reply' && this._formState?.replyTo === rootComment.id;
     const cardClass = this.getStatusClass(rootComment);
 
@@ -893,7 +802,7 @@ export default class DaComments extends LitElement {
           ${isOrphaned ? html`
             <div class="da-orphaned-badge">
               <span class="da-icon-info"></span>
-              Original content was deleted
+              Original content was deleted${orphanPreview ? html`: "${orphanPreview}"` : nothing}
             </div>
           ` : nothing}
 

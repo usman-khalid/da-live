@@ -1,5 +1,5 @@
 import { expect } from '@esm-bundle/chai';
-import commentService from '../../../../../blocks/edit/da-comments/helpers/comment-service.js';
+import commentService, { getRootComment } from '../../../../../blocks/edit/da-comments/helpers/index.js';
 
 function createMockYMap(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -11,12 +11,11 @@ function createMockYMap(initial = {}) {
     has(key) { return store.has(key); },
     forEach(fn) { store.forEach(fn); },
     observe(fn) { observers.push(fn); },
+    observerCount() { return observers.length; },
     unobserve(fn) {
       const idx = observers.indexOf(fn);
       if (idx > -1) observers.splice(idx, 1);
     },
-    _store: store,
-    _observers: observers,
   };
 }
 
@@ -41,7 +40,17 @@ function makeComment(overrides = {}) {
 }
 
 describe('CommentService', () => {
+  let originalFetch;
+  let originalAdobeIMS;
+
+  beforeEach(() => {
+    originalFetch = window.fetch;
+    originalAdobeIMS = window.adobeIMS;
+  });
+
   afterEach(() => {
+    window.fetch = originalFetch;
+    window.adobeIMS = originalAdobeIMS;
     commentService.destroy();
   });
 
@@ -71,7 +80,7 @@ describe('CommentService', () => {
       commentService.destroy();
       expect(commentService.initialized).to.be.false;
       expect(commentService.threads.size).to.equal(0);
-      expect(map._observers).to.have.length(0);
+      expect(map.observerCount()).to.equal(0);
     });
 
     it('re-initializes cleanly', () => {
@@ -80,7 +89,7 @@ describe('CommentService', () => {
       const map2 = createMockYMap({ c1: makeComment({ id: 'c1', threadId: 't1' }) });
       commentService.init(map2);
       expect(commentService.threads.size).to.equal(1);
-      expect(map1._observers).to.have.length(0);
+      expect(map1.observerCount()).to.equal(0);
     });
   });
 
@@ -95,6 +104,52 @@ describe('CommentService', () => {
       const map = createMockYMap();
       commentService.init(map, { readOnly: true, collabOrigin: 'http://localhost:8787', docName: 'doc' });
       expect(commentService.readOnly).to.be.true;
+    });
+
+    it('save() emits a compact REST doc path without .html', async () => {
+      const map = createMockYMap();
+      const comment = makeComment({ id: 'c1', threadId: 't1' });
+      const calls = [];
+      window.fetch = async (url, opts) => {
+        calls.push({ url, opts });
+        return { ok: true };
+      };
+      window.adobeIMS = null;
+
+      commentService.init(map, {
+        readOnly: true,
+        collabOrigin: 'http://localhost:4711',
+        docName: 'http://localhost:8787/source/org/site/doc.html',
+      });
+
+      await commentService.save(comment);
+
+      expect(calls).to.have.length(1);
+      expect(calls[0].url).to.equal('http://localhost:4711/api/v1/comment?doc=%2Forg%2Fsite%2Fdoc');
+      expect(calls[0].opts.method).to.equal('POST');
+      expect(JSON.parse(calls[0].opts.body)).to.deep.equal(comment);
+    });
+
+    it('remove() uses the same compact REST doc path', async () => {
+      const map = createMockYMap();
+      const calls = [];
+      window.fetch = async (url, opts) => {
+        calls.push({ url, opts });
+        return { ok: true };
+      };
+      window.adobeIMS = null;
+
+      commentService.init(map, {
+        readOnly: true,
+        collabOrigin: 'http://localhost:4711',
+        docName: 'http://localhost:8787/source/org/site/doc.html',
+      });
+
+      await commentService.remove('c1');
+
+      expect(calls).to.have.length(1);
+      expect(calls[0].url).to.equal('http://localhost:4711/api/v1/comment?doc=%2Forg%2Fsite%2Fdoc');
+      expect(calls[0].opts.method).to.equal('DELETE');
     });
   });
 
@@ -124,11 +179,34 @@ describe('CommentService', () => {
       const reply = makeComment({ id: 'c2', threadId: 't1', parentId: 'c1', createdAt: root.createdAt + 1 });
       map.set('c1', root);
       map.set('c2', reply);
-      commentService._syncFromMap();
 
       await commentService.removeThread('t1');
       expect(map.has('c1')).to.be.false;
       expect(map.has('c2')).to.be.false;
+    });
+
+    it('updateComment() saves the updater result', async () => {
+      map.set('c1', makeComment({ id: 'c1', threadId: 't1', content: 'before' }));
+
+      const updated = await commentService.updateComment('c1', (comment) => ({
+        ...comment,
+        content: 'after',
+      }));
+
+      expect(updated.content).to.equal('after');
+      expect(map.get('c1').content).to.equal('after');
+    });
+
+    it('markThreadOrphaned() and clearThreadOrphaned() round-trip orphan state on the root', async () => {
+      map.set('c1', makeComment({ id: 'c1', threadId: 't1', orphaned: false }));
+
+      await commentService.markThreadOrphaned('t1', 1234);
+      expect(map.get('c1').orphaned).to.be.true;
+      expect(map.get('c1').orphanedAt).to.equal(1234);
+
+      await commentService.clearThreadOrphaned('t1');
+      expect(map.get('c1').orphaned).to.be.undefined;
+      expect(map.get('c1').orphanedAt).to.be.undefined;
     });
   });
 
@@ -157,7 +235,7 @@ describe('CommentService', () => {
       const root = makeComment({ id: 'c1', threadId: 't1', parentId: null });
       const reply = makeComment({ id: 'c2', threadId: 't1', parentId: 'c1', createdAt: root.createdAt + 1 });
       commentService.init(createMockYMap({ c1: root, c2: reply }));
-      const r = commentService.getRootComment('t1');
+      const r = getRootComment(commentService.getThread('t1'));
       expect(r.id).to.equal('c1');
     });
 

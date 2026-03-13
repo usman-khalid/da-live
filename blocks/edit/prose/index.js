@@ -55,7 +55,7 @@ import {
   createCommentPlugin,
   openCommentPanel,
 } from './plugins/comments/commentPlugin.js';
-import commentService from '../da-comments/helpers/comment-service.js';
+import commentService from '../da-comments/helpers/index.js';
 
 let lastCursorPosition = null;
 

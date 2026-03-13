@@ -13,7 +13,6 @@
 :host {
   font-family: var(--body-font-family);
 
-  /* Surface colors - using Spectrum grays where applicable */
   --comment-surface: #fff;
   --comment-surface-alt: var(--s2-gray-75);
   --comment-surface-hover: var(--s2-gray-75);
@@ -32,7 +31,6 @@
   --comment-link: var(--spectrum-blue-800);
 }
 
-/* Panel container - matching da-versions pattern */
 .da-comments-panel {
   display: block;
   width: 375px;

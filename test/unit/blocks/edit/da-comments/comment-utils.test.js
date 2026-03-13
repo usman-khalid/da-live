@@ -1,4 +1,5 @@
 import { expect } from '@esm-bundle/chai';
+import { getSchema } from 'da-parser';
 import {
   createReply,
   resolveComment,
@@ -14,7 +15,43 @@ import {
   getReactionsList,
   REACTION_EMOJIS,
   POSITION_CONTEXT_RADIUS,
-} from '../../../../../blocks/edit/da-comments/helpers/comment-utils.js';
+  getPositionContext,
+  findBestMatchPosition,
+} from '../../../../../blocks/edit/da-comments/helpers/index.js';
+
+function createStateFromParagraphs(paragraphs) {
+  const schema = getSchema();
+  const doc = schema.node('doc', null, paragraphs.map((text) => schema.node(
+    'paragraph',
+    null,
+    text ? schema.text(text) : undefined,
+  )));
+  return { doc };
+}
+
+function findTextRange(doc, text, occurrence = 0) {
+  const posMap = [];
+  doc.descendants((node, pos) => {
+    if (!node.isText || !node.text) return true;
+    for (let i = 0; i < node.text.length; i += 1) {
+      posMap.push(pos + i);
+    }
+    return true;
+  });
+
+  let idx = -1;
+  let searchFrom = 0;
+  for (let count = 0; count <= occurrence; count += 1) {
+    idx = doc.textContent.indexOf(text, searchFrom);
+    if (idx === -1) throw new Error(`Unable to find occurrence ${occurrence} of "${text}"`);
+    searchFrom = idx + 1;
+  }
+
+  return {
+    from: posMap[idx],
+    to: posMap[idx + text.length - 1] + 1,
+  };
+}
 
 describe('comment-utils', () => {
   describe('createReply', () => {
@@ -264,6 +301,47 @@ describe('comment-utils', () => {
 
     it('handles names with extra spaces', () => {
       expect(getInitials('  John   Doe  ')).to.equal('JD');
+    });
+  });
+
+  describe('position anchors', () => {
+    it('captures only the surrounding text snapshot', () => {
+      const state = createStateFromParagraphs([
+        'Lorem ipsum dolor sit amet.',
+        'Another block target text here.',
+      ]);
+      const range = findTextRange(state.doc, 'target text');
+
+      const context = getPositionContext(state, range.from, range.to);
+
+      expect(context).to.have.keys(['textBefore', 'textAfter']);
+      expect(context.textBefore.endsWith('Another block ')).to.be.true;
+      expect(context.textAfter).to.equal(' here.');
+    });
+
+    it('uses boundary context to disambiguate identical repeated text', () => {
+      const state = createStateFromParagraphs([
+        'alpha repeat omega bravo repeat zeta',
+      ]);
+      const range = findTextRange(state.doc, 'repeat', 1);
+      const context = getPositionContext(state, range.from, range.to);
+
+      const match = findBestMatchPosition(state, 'repeat', context);
+
+      expect(match).to.deep.equal(range);
+    });
+
+    it('returns null when repeated text stays ambiguous', () => {
+      const state = createStateFromParagraphs([
+        'alpha repeat omega',
+        'alpha repeat omega',
+      ]);
+      const range = findTextRange(state.doc, 'repeat', 0);
+      const context = getPositionContext(state, range.from, range.to);
+
+      const match = findBestMatchPosition(state, 'repeat', context);
+
+      expect(match).to.equal(null);
     });
   });
 

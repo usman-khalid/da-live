@@ -18,17 +18,27 @@ import {
   NodeSelection,
   CellSelection,
 } from 'da-y-wrapper';
-import commentService from '../../../da-comments/helpers/comment-service.js';
-import { findBestMatchPosition, getPositionContext } from '../../../da-comments/helpers/comment-utils.js';
+import commentService from '../../../da-comments/helpers/index.js';
+import {
+  findThreadAtPosition,
+  mapPositionCache,
+  rebuildPositionCache,
+  syncOrphanedThreads,
+} from './helpers/index.js';
 
 const commentPluginKey = new PluginKey('comments');
 
-let positionCache = new Map();
-let reResolveTimer = null;
-let anchorUpdateTimer = null;
-let activeThreadId = null;
-let hoverThreadId = null;
-let pendingRange = null;
+let pluginController = null;
+
+function setPluginController(controller) {
+  pluginController = controller;
+}
+
+function clearPluginController(controller) {
+  if (pluginController === controller) {
+    pluginController = null;
+  }
+}
 
 function isTableCellNode(node) {
   const role = node?.type?.spec?.tableRole;
@@ -81,108 +91,16 @@ function spansTableCells(state, from, to) {
   return buildCellDecorations(state, from, to, {}).length > 0;
 }
 
-function isValidRange(state, from, to) {
-  return Number.isInteger(from)
-    && Number.isInteger(to)
-    && from >= 0
-    && to <= state.doc.content.size
-    && from < to;
-}
-
-function matchesBoundaryContext(state, from, to, positionContext) {
-  if (!positionContext) return false;
-
-  try {
-    const beforeLen = positionContext.textBefore?.length || 0;
-    const afterLen = positionContext.textAfter?.length || 0;
-    const beforeStart = Math.max(0, from - beforeLen);
-    const afterEnd = Math.min(state.doc.content.size, to + afterLen);
-
-    const before = beforeLen ? state.doc.textBetween(beforeStart, from, '', '') : '';
-    const after = afterLen ? state.doc.textBetween(to, afterEnd, '', '') : '';
-
-    if (positionContext.textBefore && before !== positionContext.textBefore) return false;
-    if (positionContext.textAfter && after !== positionContext.textAfter) return false;
-    return beforeLen > 0 || afterLen > 0;
-  } catch {
-    return false;
-  }
-}
-
-function findImagePosition(state, comment) {
-  const matches = [];
-  state.doc.descendants((node, pos) => {
-    if (node.type.name === 'image') {
-      const src = node.attrs?.src || '';
-      if (comment.imageRef && src.includes(comment.imageRef)) {
-        matches.push(pos);
-      }
-    }
-    return true;
-  });
-  return matches.length === 1 ? matches[0] : null;
-}
-
-function getRootForThread(thread) {
-  return thread.find((c) => c.parentId === null) || thread[0];
-}
-
-function resolveLiveAnchor(state, root) {
-  if (root.isImage) {
-    if (isValidRange(state, root.anchorFrom, root.anchorTo)) {
-      const node = state.doc.nodeAt(root.anchorFrom);
-      if (node?.type.name === 'image') {
-        return { from: root.anchorFrom, to: root.anchorTo };
-      }
-    }
-    const imgPos = findImagePosition(state, root);
-    return imgPos != null ? { from: imgPos, to: imgPos + 1 } : null;
-  }
-  if (root.isTable) {
-    if (isValidRange(state, root.anchorFrom, root.anchorTo)) {
-      return { from: root.anchorFrom, to: root.anchorTo };
-    }
-    return null;
-  }
-
-  if (isValidRange(state, root.anchorFrom, root.anchorTo)) {
-    const { anchorFrom, anchorTo } = root;
-    const text = state.doc.textBetween(anchorFrom, anchorTo, '', '');
-    const liveContext = root.anchorContext || root.positionContext;
-    if (
-      text === root.selectedText
-      || matchesBoundaryContext(state, anchorFrom, anchorTo, liveContext)
-    ) {
-      return { from: anchorFrom, to: anchorTo };
-    }
-  }
-
-  return null;
-}
-
-function resolveSnapshotAnchor(state, root) {
-  if (root.isImage || root.isTable || !root.selectedText) return null;
-  return findBestMatchPosition(state, root.selectedText, root.positionContext);
-}
-
-function anchorComment(state, root) {
-  return resolveLiveAnchor(state, root) || resolveSnapshotAnchor(state, root);
-}
-
-function mapPositionCache(cache, mapping) {
-  const mapped = new Map();
-  cache.forEach((range, threadId) => {
-    const from = mapping.map(range.from, 1);
-    const to = mapping.map(range.to, -1);
-    mapped.set(threadId, { from, to });
-  });
-  return mapped;
-}
-
-function buildDecorations(state, cache) {
+function buildDecorations(state, pluginState) {
   const decorations = [];
+  const {
+    positionCache,
+    activeThreadId,
+    hoverThreadId,
+    pendingRange,
+  } = pluginState;
 
-  cache.forEach((range, threadId) => {
+  positionCache.forEach((range, threadId) => {
     if (range.from >= range.to) return;
 
     const isActive = threadId === activeThreadId;
@@ -231,112 +149,38 @@ function buildDecorations(state, cache) {
   return DecorationSet.create(state.doc, decorations);
 }
 
-function updateCommentAnchors(state, cache) {
-  if (!commentService.initialized || commentService.readOnly) return;
-
-  cache.forEach((range, threadId) => {
-    if (range.from >= range.to) return;
-    const root = commentService.getRootComment(threadId);
-    if (!root) return;
-
-    const anchorContext = getPositionContext(state, range.from, range.to);
-    const sameRange = root.anchorFrom === range.from && root.anchorTo === range.to;
-    const sameContext = JSON.stringify(root.anchorContext || null)
-      === JSON.stringify(anchorContext);
-    if (sameRange && sameContext) return;
-
-    commentService.save({
-      ...root,
-      anchorFrom: range.from,
-      anchorTo: range.to,
-      anchorContext,
-    });
-  });
+function rebuildDecorations(view, pluginState) {
+  if (!view) return;
+  const decos = buildDecorations(view.state, pluginState);
+  view.dispatch(view.state.tr.setMeta(commentPluginKey, { decos }));
 }
 
-function detectOrphans(cache) {
-  if (!commentService.initialized) return;
-
-  const newlyOrphanedIds = [];
-
-  commentService.threads.forEach((thread, threadId) => {
-    const root = getRootForThread(thread);
-    if (!root || root.resolved) return;
-
-    const range = cache.get(threadId);
-    const isAnchored = range && range.from < range.to;
-
-    if (!isAnchored && !root.orphaned) {
-      commentService.save({ ...root, orphaned: true, orphanedAt: Date.now() });
-      newlyOrphanedIds.push(threadId);
-    } else if (isAnchored && root.orphaned) {
-      const { orphaned, orphanedAt, ...clean } = root;
-      commentService.save(clean);
-    }
-  });
-
+async function detectOrphans(pluginState) {
+  const newlyOrphanedIds = await syncOrphanedThreads(commentService, pluginState.positionCache);
   if (newlyOrphanedIds.length > 0) {
-    if (newlyOrphanedIds.includes(activeThreadId)) activeThreadId = null;
+    if (newlyOrphanedIds.includes(pluginState.activeThreadId)) {
+      pluginState.activeThreadId = null;
+    }
     const detail = { orphanedIds: newlyOrphanedIds };
     window.dispatchEvent(new CustomEvent('da-comments-orphaned', { detail }));
   }
 }
 
-function scheduleReResolve() {
-  if (reResolveTimer) clearTimeout(reResolveTimer);
-  reResolveTimer = setTimeout(() => {
-    reResolveTimer = null;
-    const { view } = window;
+function scheduleReResolve(view, pluginState) {
+  if (pluginState.reResolveTimer) clearTimeout(pluginState.reResolveTimer);
+  pluginState.reResolveTimer = setTimeout(async () => {
+    pluginState.reResolveTimer = null;
     if (!view) return;
-    const { state } = view;
 
-    positionCache.forEach((range, threadId) => {
-      if (range.from < range.to) return;
-      const root = commentService.getRootComment(threadId);
-      if (!root?.selectedText) return;
+    pluginState.positionCache = rebuildPositionCache(
+      view.state,
+      commentService.threads,
+      pluginState.positionCache,
+    );
 
-      if (range.from > range.to) {
-        const match = anchorComment(state, root);
-        if (match) positionCache.set(threadId, match);
-      } else {
-        try {
-          const end = range.from + root.selectedText.length;
-          if (end <= state.doc.content.size) {
-            const text = state.doc.textBetween(range.from, end, '', '');
-            if (text === root.selectedText) {
-              positionCache.set(threadId, { from: range.from, to: end });
-            }
-          }
-        } catch { /* position out of bounds */ }
-      }
-    });
-
-    commentService.threads.forEach((thread, threadId) => {
-      if (positionCache.has(threadId)) return;
-      const root = getRootForThread(thread);
-      if (!root || root.resolved) return;
-      const match = anchorComment(state, root);
-      if (match) positionCache.set(threadId, match);
-    });
-
-    positionCache.forEach((_, threadId) => {
-      if (!commentService.threads.has(threadId)) positionCache.delete(threadId);
-    });
-
-    detectOrphans(positionCache);
-    const decos = buildDecorations(state, positionCache);
-    view.dispatch(state.tr.setMeta(commentPluginKey, { decos }));
+    await detectOrphans(pluginState);
+    rebuildDecorations(view, pluginState);
   }, 300);
-}
-
-function scheduleAnchorUpdate() {
-  if (anchorUpdateTimer) clearTimeout(anchorUpdateTimer);
-  anchorUpdateTimer = setTimeout(() => {
-    anchorUpdateTimer = null;
-    const { view } = window;
-    if (!view) return;
-    updateCommentAnchors(view.state, positionCache);
-  }, 150);
 }
 
 function dispatchSelectionChange() {
@@ -376,75 +220,53 @@ export function openCommentPanel() {
   return true;
 }
 
-function rebuildDecorations() {
-  const { view } = window;
-  if (!view) return;
-  const decos = buildDecorations(view.state, positionCache);
-  view.dispatch(view.state.tr.setMeta(commentPluginKey, { decos }));
-}
-
 export function setActiveThread(threadId) {
-  if (activeThreadId === threadId) return;
-  activeThreadId = threadId ?? null;
-  rebuildDecorations();
+  pluginController?.setActiveThread(threadId ?? null);
 }
 
 export function setPendingRange(from, to) {
-  if (from != null && to != null && from < to) {
-    pendingRange = { from, to };
-  } else {
-    pendingRange = null;
-  }
-  rebuildDecorations();
+  pluginController?.setPendingRange(from, to);
 }
 
 export function clearPendingRange() {
-  if (!pendingRange) return;
-  pendingRange = null;
-  rebuildDecorations();
+  pluginController?.clearPendingRange();
 }
 
-function handleClick(view, pos) {
-  let threadId = null;
-  let bestSize = Infinity;
-  positionCache.forEach((range, id) => {
-    if (range.from < range.to && pos >= range.from && pos <= range.to) {
-      const size = range.to - range.from;
-      if (size < bestSize) {
-        bestSize = size;
-        threadId = id;
-      }
-    }
-  });
-
+function handleClick(view, pos, pluginState) {
+  const threadId = findThreadAtPosition(pluginState.positionCache, pos);
   if (threadId) {
-    activeThreadId = threadId;
-    const decos = buildDecorations(view.state, positionCache);
-    view.dispatch(view.state.tr.setMeta(commentPluginKey, { decos }));
+    pluginState.activeThreadId = threadId;
+    rebuildDecorations(view, pluginState);
     window.dispatchEvent(new CustomEvent('da-comment-highlight-click', { detail: { threadId } }));
     return true;
   }
 
-  if (activeThreadId) {
-    activeThreadId = null;
-    const decos = buildDecorations(view.state, positionCache);
-    view.dispatch(view.state.tr.setMeta(commentPluginKey, { decos }));
+  if (pluginState.activeThreadId) {
+    pluginState.activeThreadId = null;
+    rebuildDecorations(view, pluginState);
     window.dispatchEvent(new CustomEvent('da-comment-highlight-click', { detail: { threadId: null } }));
   }
   return false;
 }
 
-let lastSelectionKey = '';
-let serviceListenerAttached = false;
-
 export function createCommentPlugin() {
+  const pluginState = {
+    positionCache: new Map(),
+    reResolveTimer: null,
+    activeThreadId: null,
+    hoverThreadId: null,
+    pendingRange: null,
+    lastSelectionKey: '',
+    serviceChangeHandler: null,
+  };
+
   return new Plugin({
     key: commentPluginKey,
 
     state: {
       init(_, state) {
-        positionCache = new Map();
-        return buildDecorations(state, positionCache);
+        pluginState.positionCache = new Map();
+        return buildDecorations(state, pluginState);
       },
 
       apply(tr, oldDecos, _oldState, newState) {
@@ -452,42 +274,63 @@ export function createCommentPlugin() {
         if (forcedDecos?.decos) return forcedDecos.decos;
 
         if (tr.docChanged) {
-          positionCache = mapPositionCache(positionCache, tr.mapping);
-          return buildDecorations(newState, positionCache);
+          pluginState.positionCache = mapPositionCache(pluginState.positionCache, tr.mapping);
+          return buildDecorations(newState, pluginState);
         }
 
         return oldDecos;
       },
     },
 
-    view() {
-      if (!serviceListenerAttached) {
-        commentService.addEventListener('change', () => scheduleReResolve());
-        serviceListenerAttached = true;
-      }
-
-      scheduleReResolve();
+    view(view) {
+      const controller = {
+        setActiveThread(threadId) {
+          if (pluginState.activeThreadId === threadId) return;
+          pluginState.activeThreadId = threadId;
+          rebuildDecorations(view, pluginState);
+        },
+        setPendingRange(from, to) {
+          if (from != null && to != null && from < to) {
+            pluginState.pendingRange = { from, to };
+          } else {
+            pluginState.pendingRange = null;
+          }
+          rebuildDecorations(view, pluginState);
+        },
+        clearPendingRange() {
+          if (!pluginState.pendingRange) return;
+          pluginState.pendingRange = null;
+          rebuildDecorations(view, pluginState);
+        },
+      };
+      setPluginController(controller);
+      pluginState.serviceChangeHandler = () => scheduleReResolve(view, pluginState);
+      commentService.addEventListener('change', pluginState.serviceChangeHandler);
+      scheduleReResolve(view, pluginState);
 
       return {
-        update(view, prevState) {
-          if (view.state.doc !== prevState.doc) {
-            scheduleReResolve();
-            scheduleAnchorUpdate();
+        update(editorView, prevState) {
+          if (editorView.state.doc !== prevState.doc) {
+            scheduleReResolve(editorView, pluginState);
           }
 
-          const { from, to } = view.state.selection;
+          const { from, to } = editorView.state.selection;
           const { from: prevFrom, to: prevTo } = prevState.selection;
           const selectionKey = `${from}-${to}`;
           const prevSelectionKey = `${prevFrom}-${prevTo}`;
 
-          if (selectionKey !== prevSelectionKey && selectionKey !== lastSelectionKey) {
-            lastSelectionKey = selectionKey;
+          if (selectionKey !== prevSelectionKey && selectionKey !== pluginState.lastSelectionKey) {
+            pluginState.lastSelectionKey = selectionKey;
             dispatchSelectionChange();
           }
         },
         destroy() {
-          if (reResolveTimer) clearTimeout(reResolveTimer);
-          if (anchorUpdateTimer) clearTimeout(anchorUpdateTimer);
+          if (pluginState.reResolveTimer) clearTimeout(pluginState.reResolveTimer);
+          if (pluginState.serviceChangeHandler) {
+            commentService.removeEventListener('change', pluginState.serviceChangeHandler);
+            pluginState.serviceChangeHandler = null;
+          }
+          clearPluginController(controller);
         },
       };
     },
@@ -497,24 +340,22 @@ export function createCommentPlugin() {
         return this.getState(state);
       },
       handleClick(view, pos) {
-        return handleClick(view, pos);
+        return handleClick(view, pos, pluginState);
       },
       handleDOMEvents: {
         mouseover(view, event) {
           const span = event.target.closest('.da-comment-highlight');
           const tid = span?.getAttribute('data-comment-thread') || null;
-          if (tid === hoverThreadId) return false;
-          hoverThreadId = tid;
-          const decos = buildDecorations(view.state, positionCache);
-          view.dispatch(view.state.tr.setMeta(commentPluginKey, { decos }));
+          if (tid === pluginState.hoverThreadId) return false;
+          pluginState.hoverThreadId = tid;
+          rebuildDecorations(view, pluginState);
           return false;
         },
         mouseout(view, event) {
-          if (!hoverThreadId) return false;
+          if (!pluginState.hoverThreadId) return false;
           if (event.relatedTarget && view.dom.contains(event.relatedTarget)) return false;
-          hoverThreadId = null;
-          const decos = buildDecorations(view.state, positionCache);
-          view.dispatch(view.state.tr.setMeta(commentPluginKey, { decos }));
+          pluginState.hoverThreadId = null;
+          rebuildDecorations(view, pluginState);
           return false;
         },
       },
