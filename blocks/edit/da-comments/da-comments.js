@@ -62,6 +62,10 @@ export default class DaComments extends LitElement {
     return window.view ? hasValidCommentSelection(window.view.state) : false;
   }
 
+  get activeCommentsCount() {
+    return commentService.activeCount;
+  }
+
   constructor() {
     super();
     this._threads = new Map();
@@ -917,7 +921,7 @@ export default class DaComments extends LitElement {
           <button
             class="da-comments-close-btn"
             @click=${this.handleClose}
-            aria-label="Close comments pane">Comments</button>
+            aria-label="Close comments pane">Comments (${this.activeCommentsCount})</button>
         </p>
         ${this.renderContent()}
       </div>
